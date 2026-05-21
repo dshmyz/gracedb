@@ -306,3 +306,14 @@ gracedb 不强制验证向量维度。确保所有插入同一集合的向量维
 ### Q: FTS 支持中文吗？
 
 支持。使用 gse 分词器，内置中文分词和停用词表。分词器延迟初始化，首次使用时自动加载词典。
+
+---
+
+## English Documentation
+
+| Document | Content |
+|----------|---------|
+| [Getting Started](getting-started-en.md) | Installation, configuration, quick start, FAQ |
+| [API Reference](api-reference-en.md) | Complete API, data types, storage key formats |
+| [Architecture](architecture-en.md) | Layered architecture, data flow, index system |
+| [Module Guide](modules-en.md) | Package responsibilities, key types, dependencies |

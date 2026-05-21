@@ -1,6 +1,6 @@
-# qdb 实现 CortexDB 功能覆盖 — 分阶段实施文档
+# gracedb 实现 CortexDB 功能覆盖 — 分阶段实施文档
 
-> 目标：在现有 qdb（Badger KV 存储）基础上，逐步覆盖 CortexDB 的核心能力，
+> 目标：在现有 gracedb（Badger KV 存储）基础上，逐步覆盖 CortexDB 的核心能力，
 > 最终成为对标 CortexDB 的 Go 嵌入式 AI 记忆 + 知识图谱数据库。
 > **状态：全部 11 个阶段已完成 ✅**
 > 覆盖度：从 ~15% 提升到 **~92%**（42 功能点逐项验证，加权计算）
@@ -11,7 +11,7 @@
 ## Phase 0：修复已知 Bug（先修后建）
 
 ### P0-1：Fix UpsertBatch FTS 索引错配
-- **文件**: `pkg/qdb/vector.go:30-37`
+- **文件**: `pkg/gracedb/vector.go:30-37`
 - **问题**: `ListEmbeddingIDs` 返回 collection 所有 ID，新插入的 N 个 embedding 的 FTS 索引被关联到错误的旧 ID
 - **方案**: `UpsertBatch` 返回新创建的 embedding IDs 列表，用返回值做 FTS 索引
 
@@ -29,7 +29,7 @@
 
 ## Phase 1：Embedder 接口 + 文本自动向量化
 
-> 让 qdb 支持 "插入文本 = 自动 embedding"，无需调用方手动向量化
+> 让 gracedb 支持 "插入文本 = 自动 embedding"，无需调用方手动向量化
 
 ### 1.1 Embedder 接口定义
 ```go
@@ -46,25 +46,25 @@ type Embedder interface {
 
 ### 1.2 DB 层文本插入 API
 ```go
-// pkg/qdb/text.go
+// pkg/gracedb/text.go
 func (db *DB) InsertText(collectionName, docID, content string, metadata map[string]string) (string, error)
 func (db *DB) InsertTextBatch(collectionName string, contents []string, docIDs []string, metadata []map[string]string) error
 func (db *DB) SearchText(collectionName string, query string, topK int) ([]types.ScoredEmbedding, error)
 ```
-- **新文件**: `pkg/qdb/text.go`
+- **新文件**: `pkg/gracedb/text.go`
 - **逻辑**: 调用 Embedder 生成向量 → 调用现有 Upsert/Search
 - **无 Embedder 时**: `InsertText` 返回错误（要求调用方提供向量）
 
 ### 1.3 Quick 接口（类似 CortexDB）
 ```go
-// pkg/qdb/quick.go
+// pkg/gracedb/quick.go
 func (db *DB) Quick() *Quick
 func (q *Quick) Add(ctx context.Context, vector []float32, content string) (string, error)
 func (q *Quick) AddText(ctx context.Context, text string, metadata map[string]string) (string, error)
 func (q *Quick) Search(ctx context.Context, query []float32, topK int) ([]types.ScoredEmbedding, error)
 func (q *Quick) SearchText(ctx context.Context, query string, topK int) ([]types.ScoredEmbedding, error)
 ```
-- **新文件**: `pkg/qdb/quick.go`
+- **新文件**: `pkg/gracedb/quick.go`
 - **参考**: CortexDB `pkg/cortexdb/quick.go`
 
 ---
@@ -140,13 +140,13 @@ func ChunkBySize(content string, chunkSize, chunkOverlap int) []Chunk
 
 ### 3.3 Knowledge CRUD API
 ```go
-// pkg/qdb/knowledge.go
+// pkg/gracedb/knowledge.go
 func (db *DB) SaveKnowledge(collectionName, knowledgeID, title, content string, opts KnowledgeSaveOptions) (*KnowledgeRecord, error)
 func (db *DB) GetKnowledge(collectionName, knowledgeID string) (*KnowledgeRecord, error)
 func (db *DB) UpdateKnowledge(collectionName, knowledgeID string, req KnowledgeUpdateRequest) (*KnowledgeRecord, error)
 func (db *DB) DeleteKnowledge(collectionName, knowledgeID string) error
 ```
-- **新文件**: `pkg/qdb/knowledge.go`
+- **新文件**: `pkg/gracedb/knowledge.go`
 - **SaveKnowledge 逻辑**:
   1. 检查 knowledgeID 是否已存在（版本 +1）
   2. 对 content 分块 → 每个 chunk 作为独立 embedding 存入
@@ -158,7 +158,7 @@ func (db *DB) DeleteKnowledge(collectionName, knowledgeID string) error
 ```go
 func (db *DB) SearchKnowledge(collectionName, query string, opts KnowledgeSearchOptions) (*KnowledgeSearchResponse, error)
 ```
-- **新文件**: `pkg/qdb/knowledge.go`
+- **新文件**: `pkg/gracedb/knowledge.go`
 - **检索逻辑**:
   1. FTS 搜索 query → 匹配 chunk
   2. （有 Embedder 时）向量搜索 query → 匹配 chunk
@@ -206,14 +206,14 @@ func resolveMemoryBucket(scope, userID, sessionID, namespace string) (scope, buc
 
 ### 4.3 Memory CRUD + 检索
 ```go
-// pkg/qdb/memory.go
+// pkg/gracedb/memory.go
 func (db *DB) SaveMemory(req MemorySaveRequest) (*MemoryRecord, error)
 func (db *DB) GetMemory(memoryID string) (*MemoryRecord, error)
 func (db *DB) UpdateMemory(memoryID string, req MemoryUpdateRequest) (*MemoryRecord, error)
 func (db *DB) DeleteMemory(memoryID string) error
 func (db *DB) SearchMemory(req MemorySearchRequest) (*MemorySearchResponse, error)
 ```
-- **新文件**: `pkg/qdb/memory.go`
+- **新文件**: `pkg/gracedb/memory.go`
 - **SearchMemory 逻辑**:
   - 有 Embedder → 向量化 query → 在 bucket 内向量搜索
   - 无 Embedder → FTS lexical 搜索（bm25 风格打分）
@@ -293,7 +293,7 @@ func (g *GraphStore) ShortestPath(fromID, toID string) (*PathResult, error)
 - **参考**: CortexDB `pkg/graph/graph_traversal.go`
 
 ### 6.4 Entity-Chunk 关联
-- **修改**: `pkg/qdb/knowledge.go`
+- **修改**: `pkg/gracedb/knowledge.go`
 - **逻辑**: SaveKnowledge 时自动创建 entity node + mention edge（entity → chunk）
 
 ---
@@ -304,7 +304,7 @@ func (g *GraphStore) ShortestPath(fromID, toID string) (*PathResult, error)
 
 ### 7.1 Toolbox API
 ```go
-// pkg/qdb/toolbox.go
+// pkg/gracedb/toolbox.go
 type GraphRAGToolbox struct { db *DB }
 
 func (t *GraphRAGToolbox) Definitions() []ToolDefinition
@@ -319,7 +319,7 @@ func (t *GraphRAGToolbox) Call(ctx context.Context, name string, payload map[str
 // - memory_save / memory_search
 // - knowledge_graph_upsert / knowledge_graph_query
 ```
-- **新文件**: `pkg/qdb/toolbox.go`、`pkg/qdb/tool_defs.go`
+- **新文件**: `pkg/gracedb/toolbox.go`、`pkg/gracedb/tool_defs.go`
 - **参考**: CortexDB `pkg/cortexdb/graphrag_tool_defs.go`、`graphrag_tool_*.go`
 
 ### 7.2 RetrievalPlan 结构
@@ -352,10 +352,10 @@ type RetrievalFilters struct {
 
 ### 8.1 Recall API
 ```go
-// pkg/qdb/knowledge_memory.go
+// pkg/gracedb/knowledge_memory.go
 func (db *DB) KnowledgeMemoryRecall(req KnowledgeMemoryRecallRequest) (*KnowledgeMemoryRecallResponse, error)
 ```
-- **新文件**: `pkg/qdb/knowledge_memory.go`
+- **新文件**: `pkg/gracedb/knowledge_memory.go`
 - **逻辑**:
   1. 并行搜索 memory（Phase 4）和 knowledge（Phase 3）
   2. 图展开 enrich（Phase 6）
@@ -502,14 +502,14 @@ func (db *DB) NewMCPServer(opts MCPServerOptions) *MCPServer
 
 | Phase | 内容 | 新增文件 |
 |-------|------|---------|
-| **P0** | Bug 修复（3 个） | 修改 `pkg/qdb/vector.go`, `pkg/store/crud.go`, `pkg/store/search.go`, `pkg/store/collection.go` |
-| **1** | Embedder 接口 + 文本 API | `pkg/types/embedder.go`, `pkg/qdb/text.go`, `pkg/qdb/quick.go` |
+| **P0** | Bug 修复（3 个） | 修改 `pkg/gracedb/vector.go`, `pkg/store/crud.go`, `pkg/store/search.go`, `pkg/store/collection.go` |
+| **1** | Embedder 接口 + 文本 API | `pkg/types/embedder.go`, `pkg/gracedb/text.go`, `pkg/gracedb/quick.go` |
 | **2** | 高级过滤 + ACL 执行 | 修改 `pkg/types/embedding.go`, `pkg/store/search.go` |
-| **3** | Knowledge 存储/检索 | `pkg/types/knowledge.go`, `pkg/store/chunking.go`, `pkg/store/knowledge.go`, `pkg/qdb/knowledge.go` |
-| **4** | Agent Memory | `pkg/types/memory.go`, `pkg/store/memory.go`, `pkg/qdb/memory.go` |
+| **3** | Knowledge 存储/检索 | `pkg/types/knowledge.go`, `pkg/store/chunking.go`, `pkg/store/knowledge.go`, `pkg/gracedb/knowledge.go` |
+| **4** | Agent Memory | `pkg/types/memory.go`, `pkg/store/memory.go`, `pkg/gracedb/memory.go` |
 | **5** | Reranker + 混合增强 | `pkg/types/reranker.go`, `pkg/store/reranker.go` |
 | **6** | Property Graph | `pkg/graph/types.go`, `pkg/graph/store.go`, `pkg/graph/traversal.go` |
-| **7** | GraphRAG 工具集 | `pkg/qdb/toolbox.go`, `pkg/mcp/server.go` |
+| **7** | GraphRAG 工具集 | `pkg/gracedb/toolbox.go`, `pkg/mcp/server.go` |
 | **8** | KnowledgeMemory | 融合在 toolbox.go 的 recall_knowledge_memory 中 |
 | **9** | IVF/LSH 索引 | `pkg/index/ivf.go`, `pkg/index/lsh.go` |
 | **10** | 向量量化 | `pkg/quantization/scalar.go`, `pkg/quantization/product.go` |
@@ -523,12 +523,12 @@ pkg/types/errors.go          - 扩展错误类型
 pkg/types/knowledge.go       - Knowledge 数据模型
 pkg/types/memory.go          - Memory 数据模型
 pkg/types/reranker.go        - Reranker 接口
-pkg/qdb/text.go              - 文本自动向量化
-pkg/qdb/quick.go             - Quick 快捷接口
-pkg/qdb/knowledge.go         - Knowledge API
-pkg/qdb/memory.go            - Memory API
-pkg/qdb/toolbox.go           - GraphRAG 工具集
-pkg/qdb/db.go                - 扩展 DB 结构
+pkg/gracedb/text.go              - 文本自动向量化
+pkg/gracedb/quick.go             - Quick 快捷接口
+pkg/gracedb/knowledge.go         - Knowledge API
+pkg/gracedb/memory.go            - Memory API
+pkg/gracedb/toolbox.go           - GraphRAG 工具集
+pkg/gracedb/db.go                - 扩展 DB 结构
 pkg/store/chunking.go        - 文本分块
 pkg/store/knowledge.go       - Knowledge 存储
 pkg/store/memory.go          - Memory 存储

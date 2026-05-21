@@ -376,6 +376,13 @@ go test -v ./pkg/index/    # Verbose output
 go test -bench=. ./pkg/store/  # Benchmarks
 ```
 
+## Acknowledgments
+
+gracedb is inspired by and built upon the work of these excellent projects:
+
+- **[CortexDB](https://github.com/liliang-cn/cortexdb)** — gracedb targets CortexDB feature parity as its design reference. The KnowledgeMemory, AutoRetain, GraphRAG toolbox, and MemoryFlow workflows are all modeled after CortexDB's architecture and APIs.
+- **[Badger](https://github.com/dgraph-io/badger)** — gracedb uses Badger as its underlying storage engine. Badger's high-performance LSM-tree, MVCC, and ACID transaction support make gracedb's embedded design possible.
+
 ## License
 
 MIT

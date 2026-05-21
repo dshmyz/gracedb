@@ -163,3 +163,18 @@ go mod tidy
 - `SearchText` 无 Embedder 时自动 fallback 到 FTS
 - 门面层 API 接受 collection name（非 UUID），内部自动转换为 collection ID
 - 所有索引为纯 Go 实现，无 C 依赖
+
+## 提交规范
+
+所有 git commit 必须使用**中英文双语 commit message**。
+
+格式：`<type>: <英文摘要> / <中文摘要>`
+
+示例：
+- `feat: add KnowledgeMemory recall / 添加 KnowledgeMemory 召回功能`
+- `docs: update API reference / 更新 API 参考文档`
+- `fix: resolve FTS index key mismatch / 修复 FTS 索引键不匹配`
+- `refactor: simplify store initialization / 简化 store 初始化`
+- `test: add benchmark for group aggregation / 添加分组聚合基准测试`
+
+类型（type）使用 conventional commits 规范：`feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `perf`。
