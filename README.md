@@ -8,7 +8,7 @@ gracedb is a Go embedded AI memory and knowledge graph database built on Badger 
 
 ## CortexDB Feature Coverage
 
-gracedb targets CortexDB feature parity. After逐项 validation of 42 feature points (weighted calculation), **current coverage is ~92%**.
+gracedb targets CortexDB feature parity. After step-by-step validation of 42 feature points (weighted calculation), **current coverage is ~92%**
 
 ### Fully Covered (34+ items, 100%)
 
@@ -38,6 +38,7 @@ All core features implemented. Remaining gaps require caller-side LLM integratio
 | [Architecture](docs/architecture.md) | Layered architecture, data flow, index system, extension points |
 | [Module Guide](docs/modules.md) | Package responsibilities, key types, dependency graph |
 | [Implementation Plan](IMPLEMENTATION_PLAN.md) | Phased development roadmap |
+| [中文版](README_CN.md) | 中文文档 |
 
 ## Features
 
