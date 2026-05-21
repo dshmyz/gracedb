@@ -38,6 +38,10 @@ type SearchOptions struct {
 	MetadataExists []string
 	// DocID filters results to a specific document ID.
 	DocID string
+	// QueryText is the original text query, used by Reranker for cross-encoding.
+	QueryText string
+	// Reranker applies secondary re-ranking after initial retrieval. Nil = skip.
+	Reranker Reranker
 }
 
 // Collection represents a namespace for embeddings.
@@ -82,7 +86,8 @@ type Config struct {
 	Path             string
 	VectorDim        int
 	SimilarityFn     string
-	IndexType        string // "hnsw" or "flat"
+	IndexType        string   // "hnsw" (default) / "ivf" / "flat" / "lsh"
+	IndexTypes       []string // multi-index: use >1 types for hybrid search
 	HNSWConfig       *HNSWConfig
 	Logger           func(msg string, args ...any)
 	AutoSave         bool

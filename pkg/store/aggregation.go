@@ -108,3 +108,92 @@ func (s *BadgerStore) Aggregate(collectionName string, metadataKey string, aggTy
 
 	return result, nil
 }
+
+// GroupAggregate performs aggregation grouped by a metadata key (GROUP BY).
+// For count, valueKey can be empty to count items per group.
+func (s *BadgerStore) GroupAggregate(collectionName string, groupKey string, valueKey string, aggType AggregationType) (map[string]*AggregationResult, error) {
+	coll, err := s.GetCollection(collectionName)
+	if err != nil {
+		return nil, err
+	}
+
+	groups := make(map[string]*AggregationResult)
+
+	ids, err := s.ListEmbeddingIDs(coll.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	err = s.View(func(txn *badger.Txn) error {
+		for _, embID := range ids {
+			item, err := txn.Get([]byte(fmt.Sprintf("%s%s:%s", embPrefix, coll.ID, embID)))
+			if err != nil {
+				continue
+			}
+			var emb types.Embedding
+			if err := item.Value(func(val []byte) error {
+				return unmarshal(cloneBytes(val), &emb)
+			}); err != nil {
+				continue
+			}
+
+			if emb.Metadata == nil {
+				continue
+			}
+			groupVal, ok := emb.Metadata[groupKey]
+			if !ok {
+				continue
+			}
+
+			r, exists := groups[groupVal]
+			if !exists {
+				r = &AggregationResult{
+					Type:        aggType,
+					MetadataKey: valueKey,
+					Min:         math.MaxFloat64,
+					Max:         -math.MaxFloat64,
+				}
+				groups[groupVal] = r
+			}
+
+			if aggType == AggCount {
+				r.Count++
+				continue
+			}
+
+			valStr, ok := emb.Metadata[valueKey]
+			if !ok {
+				continue
+			}
+			val, err := strconv.ParseFloat(strings.TrimSpace(valStr), 64)
+			if err != nil {
+				continue
+			}
+
+			r.Count++
+			r.Sum += val
+			if val < r.Min {
+				r.Min = val
+			}
+			if val > r.Max {
+				r.Max = val
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Compute averages.
+	for _, r := range groups {
+		if r.Count > 0 {
+			r.Avg = r.Sum / float64(r.Count)
+		} else {
+			r.Min = 0
+			r.Max = 0
+		}
+	}
+
+	return groups, nil
+}

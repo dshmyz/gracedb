@@ -11,11 +11,12 @@ import (
 
 // BadgerStore is the Badger-backed storage layer for gracedb.
 type BadgerStore struct {
-	db      *badger.DB
-	config  *types.Config
-	mu      sync.RWMutex
-	indexes map[string]index.Index // collectionID → in-memory vector index
-	idxType string                 // "hnsw" / "ivf" / "flat" / "lsh"
+	db       *badger.DB
+	config   *types.Config
+	mu       sync.RWMutex
+	indexes  map[string]index.Index // collectionID → in-memory vector index
+	idxType  string                 // "hnsw" / "ivf" / "flat" / "lsh"
+	idxTypes []string               // multi-index types
 }
 
 // New creates and opens a BadgerStore.
@@ -39,10 +40,11 @@ func New(cfg *types.Config) (*BadgerStore, error) {
 	}
 
 	return &BadgerStore{
-		db:      db,
-		config:  cfg,
-		indexes: make(map[string]index.Index),
-		idxType: idxType,
+		db:       db,
+		config:   cfg,
+		indexes:  make(map[string]index.Index),
+		idxType:  idxType,
+		idxTypes: cfg.IndexTypes,
 	}, nil
 }
 

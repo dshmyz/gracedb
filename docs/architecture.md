@@ -325,6 +325,31 @@ type Index interface {
 }
 ```
 
+## CortexDB 功能覆盖
+
+经 42 个功能点逐项验证（按用户场景加权），当前覆盖 **~76%**。
+
+原估算 55% 低估原因：
+1. 按 Phase 计数（11/20）而非功能点（42 个）
+2. gracedb 额外实现了 CortexDB 未纳入的 6 个模块（RDF/SPARQL/RDFS/SHACL/Hindsight）
+3. 未加权——把轻量功能（Benchmark）和核心功能（向量检索）等同
+
+### 按权重排序的未实现/部分实现功能
+
+| 功能 | 状态 | 缺失 | 权重 |
+|------|------|------|------|
+| Reflect/Consolidate | ⚠️ 60% | 规则版已有，缺 LLM 合成 | 4 |
+| LLM 实体提取 | ⚠️ 30% | 仅规则版，无 LLM | 4 |
+| KnowledgeMemory 完整融合 | ⚠️ 80% | Recall/Reflect/Consolidate 已有，缺图展开 enrich | 4 |
+| 外部 Reranker | ⚠️ 50% | 无可插拔外部模型 | 3 |
+| Ontology 管理 | ⚠️ 50% | RDFS 6 推理 + SHACL 验证已有 | 3 |
+| 多索引组合 | ⚠️ 60% | 未接入门面 | 2 |
+| 聚合查询 | ⚠️ 70% | 缺分组聚合 | 2 |
+| 地理搜索 | ⚠️ 60% | 缺空间索引 | 2 |
+| Benchmark | ❌ 0% | 无 | 2 |
+
+---
+
 ## 性能特征
 
 ### 索引选择指南

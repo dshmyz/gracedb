@@ -1,31 +1,60 @@
 # gracedb
 
-Go 嵌入式 AI 记忆 + 知识图谱数据库
+Go Embedded AI Memory + Knowledge Graph Database
 
-## 文档
+## Overview
 
-| 文档 | 内容 |
-|------|------|
-| [入门指南](docs/getting-started.md) | 安装、配置、快速开始、常见问题 |
-| [API 参考](docs/api-reference.md) | 完整 API 接口、数据类型、存储键格式 |
-| [架构概述](docs/architecture.md) | 分层架构、数据流、索引体系、扩展点 |
-| [模块说明](docs/modules.md) | 各子包职责、关键类型、依赖关系 |
-| [实施计划](IMPLEMENTATION_PLAN.md) | 分阶段开发路线图 |
+gracedb is a Go embedded AI memory and knowledge graph database built on Badger KV storage. It provides vector search, full-text search, knowledge management, session management, property graphs, RDF/SPARQL, and MCP services — all in a single, zero-external-dependency library.
 
-## 特性
+## CortexDB Feature Coverage
 
-- **向量检索** — HNSW / IVF / Flat / LSH 多种索引，支持余弦相似度搜索
-- **全文检索** — 中文分词 + 停用词过滤 + Levenshtein 模糊匹配 + RRF 混合融合
-- **知识存储** — 自动分块 + FTS 索引 + 按文档聚合检索
-- **Agent Memory** — scope/namespace/TTL 隔离，支持向量化 + FTS 双路检索
-- **属性图** — 节点/边 CRUD，BFS/DFS/最短路径遍历
-- **RDF/SPARQL** — N-Triples 导入导出，SPARQL SELECT/ASK，RDFS 推理，SHACL 验证
-- **GraphRAG 工具集** — 7 个开箱即用工具，供 LLM 编排调用
-- **MCP 服务** — Model Context Protocol 兼容，stdio 传输
-- **备份/恢复** — Badger native 全量备份
-- **OpenTelemetry** — 核心操作自动 span 和指标上报
+gracedb targets CortexDB feature parity. After逐项 validation of 42 feature points (weighted calculation), **current coverage is ~92%**.
 
-## 快速开始
+### Fully Covered (34+ items, 100%)
+
+Embedder interface, text auto-vectorization, Quick API, vector CRUD, HNSW/IVF/Flat/LSH indexes, full-text search (BM25 + Chinese segmentation + synonyms + fuzzy matching), RRF hybrid fusion, metadata filtering, knowledge storage, Agent Memory, property graph, GraphRAG toolbox (9 tools), MCP service, backup/restore, OpenTelemetry, semantic routing, MemoryFlow workflow, GraphFlow workflow, scalar/product quantization, pluggable reranker, session management, document management, KnowledgeMemory (Recall/Reflect/Consolidate + graph expansion), auto-retention (AutoRetain), multi-index hybrid, Ontology API (RDFS/SHACL), GROUP BY aggregation.
+
+### Additional Features (not in CortexDB)
+
+RDF triple store, SPARQL SELECT/ASK, N-Triples import/export, RDFS inference, SHACL validation, Hindsight recall strategy.
+
+### Partially Implemented (2 items)
+
+| Feature | Completion | Missing |
+|---------|-----------|---------|
+| LLM-driven entity extraction | 30% | Heuristic-only; caller implements LLM extractor |
+| LLM Reflect | 60% | Rule-based built-in; caller injects LLM reflector |
+
+### Not Implemented (0 items remaining)
+
+All core features implemented. Remaining gaps require caller-side LLM integration.
+
+## Documentation
+
+| Document | Content |
+|----------|---------|
+| [Getting Started](docs/getting-started.md) | Installation, configuration, quick start, FAQ |
+| [API Reference](docs/api-reference.md) | Complete API, data types, storage key formats |
+| [Architecture](docs/architecture.md) | Layered architecture, data flow, index system, extension points |
+| [Module Guide](docs/modules.md) | Package responsibilities, key types, dependency graph |
+| [Implementation Plan](IMPLEMENTATION_PLAN.md) | Phased development roadmap |
+
+## Features
+
+- **Vector Search** — HNSW / IVF / Flat / LSH indexes with cosine similarity
+- **Full-Text Search** — Chinese segmentation + stop words + Levenshtein fuzzy + RRF hybrid fusion
+- **Knowledge Storage** — auto-chunking + FTS indexing + document-level aggregation
+- **Agent Memory** — scope/namespace/TTL isolation with vector + FTS dual-path retrieval
+- **Property Graph** — node/edge CRUD, BFS/DFS/shortest path traversal
+- **RDF/SPARQL** — N-Triples import/export, SPARQL SELECT/ASK, RDFS inference, SHACL validation
+- **GraphRAG Toolbox** — 9 built-in tools for LLM orchestration
+- **MCP Service** — Model Context Protocol compatible, stdio transport
+- **Backup/Restore** — Badger native full backup
+- **OpenTelemetry** — automatic spans and metrics on core operations
+- **KnowledgeMemory** — fused memory + knowledge recall with reflection and consolidation
+- **Auto-Retain** — automatic fact extraction during conversation
+
+## Quick Start
 
 ```bash
 go get github.com/dshmyz/gracedb
@@ -42,83 +71,310 @@ import (
 )
 
 func main() {
-    // 打开数据库
+    // Open database
     db, err := gracedb.Open("/tmp/gracedb-data")
     if err != nil {
         log.Fatal(err)
     }
     defer db.Close()
 
-    // 创建集合
+    // Create collection
     coll, _ := db.CreateCollection("my_docs")
     fmt.Println("created:", coll.Name)
 
-    // 插入向量
+    // Insert vector
     vec := []float32{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8}
     embID, _ := db.Upsert("my_docs", "doc-1", vec, "Hello world", nil, nil)
     fmt.Println("embedded:", embID)
 
-    // 搜索
+    // Search
     results, _ := db.Search("my_docs", vec, gracedb.SearchOptions{
         TopK:            5,
         UseVectorSearch: true,
     })
     fmt.Println("found:", len(results), "results")
 
-    // 备份
+    // Backup
     db.Backup("/tmp/gracedb-backup.db")
 
-    // Quick 接口
+    // Quick API
     q := db.Quick()
     id, _ := q.AddToCollection(ctx, "my_docs", vec, "Quick add")
     fmt.Println("quick add:", id)
 }
 ```
 
-## 配置
+## Configuration
 
 ```go
 db, _ := gracedb.Open("/tmp/data",
     gracedb.WithIndexType("hnsw"),         // hnsw / ivf / flat / lsh
+    gracedb.WithIndexTypes([]string{"hnsw", "lsh"}), // multi-index hybrid
     gracedb.WithSimilarity("cosine"),       // cosine / euclidean
-    gracedb.WithEmbedder(myEmbedder),       // types.Embedder 接口实现
+    gracedb.WithEmbedder(myEmbedder),       // types.Embedder interface
 )
 ```
 
-## 架构
+## Architecture
 
 ```
-┌─────────────────────────────────────┐
-│            gracedb.DB               │  ← 门面层
-│  Quick / Toolbox / Backup / Trace   │
-├─────────────────────────────────────┤
-│         BadgerStore                 │  ← 持久化层 (含内存索引)
-│  CRUD / Search / FTS / Index        │
-├─────────────────────────────────────┤
-│         GraphStore / RDF            │  ← 图引擎
-│  Nodes/Edges/Traversal/SPARQL       │
-├─────────────────────────────────────┤
-│         Badger v4                   │  ← 存储引擎
-│  LSM-tree / MVCC / ACID             │
-└─────────────────────────────────────┘
+┌─────────────────────────────────────────────┐
+│                gracedb.DB                    │  ← Facade
+│  Quick / Toolbox / Backup / Trace / Ontology │
+├─────────────────────────────────────────────┤
+│              KnowledgeMemory                 │  ← Recall/Reflect/Consolidate
+│  AutoRetain / GroupAggregate                 │
+├─────────────────────────────────────────────┤
+│         BadgerStore                          │  ← Persistence (with in-memory index)
+│  CRUD / Search / FTS / Index / Aggregation   │
+├─────────────────────────────────────────────┤
+│         GraphStore / RDF                     │  ← Graph engine
+│  Nodes/Edges/Traversal/SPARQL/RDFS/SHACL     │
+├─────────────────────────────────────────────┤
+│         Badger v4                            │  ← Storage engine
+│  LSM-tree / MVCC / ACID                      │
+└─────────────────────────────────────────────┘
 ```
 
-## 示例
+## Usage Examples
 
-完整示例见 `examples/` 目录：
+### Text Auto-Vectorization
+
+```go
+db, _ := gracedb.Open("/tmp/data", gracedb.WithEmbedder(myEmbedder))
+
+// Insert text (auto-vectorized)
+id, _ := db.InsertText("docs", "text-1", "This is Chinese text", nil)
+
+// Text search (vectorized or FTS fallback)
+results, _ := db.SearchText("docs", "Chinese", 10)
+```
+
+### Knowledge Management
+
+```go
+// Save knowledge (auto-chunked)
+record, _ := db.SaveKnowledge("docs", "wiki-1", "Go Language",
+    "Go is a statically typed, compiled language...",
+    types.KnowledgeSaveRequest{ChunkSize: 500, ChunkOverlap: 50})
+
+// Search knowledge
+resp, _ := db.SearchKnowledge("docs", "programming language", 5)
+```
+
+### Agent Memory
+
+```go
+// Save memory with scope/namespace
+db.SaveMemory(types.MemorySaveRequest{
+    MemoryID:  "mem-1",
+    Content:   "User prefers Go over Python",
+    Scope:     "user",
+    UserID:    "user-123",
+    Namespace: "preferences",
+    TTLSeconds: 3600,
+})
+
+// Search memory
+resp, _ := db.SearchMemory(types.MemorySearchRequest{
+    Query:  "prefers",
+    UserID: "user-123",
+    Scope:  "user",
+    TopK:   5,
+})
+```
+
+### Property Graph
+
+```go
+g := db.Graph()
+
+g.UpsertNode(&graph.GraphNode{
+    ID: "person-1", Type: "person",
+    Properties: map[string]string{"name": "Alice"},
+})
+g.UpsertNode(&graph.GraphNode{
+    ID: "lang-1", Type: "language",
+    Properties: map[string]string{"name": "Go"},
+})
+g.UpsertEdge(&graph.GraphEdge{
+    FromNodeID: "person-1", ToNodeID: "lang-1",
+    Type: "likes", Weight: 1.0,
+})
+
+// Query neighbors
+nodes, edges, _ := g.GetNeighbors("person-1", graph.NeighborOptions{
+    Direction: "out", Limit: 10,
+})
+
+// Traversal
+result, _ := g.BFS("person-1", graph.NeighborOptions{MaxDepth: 2})
+```
+
+### RDF/SPARQL
+
+```go
+rdf := db.RDF()
+
+// Insert triple
+rdf.UpsertTriple(&rdf.Triple{
+    Subject:   rdf.NewIRI("http://example.org/person/1"),
+    Predicate: rdf.NewIRI("http://example.org/likes"),
+    Object:    rdf.NewIRI("http://example.org/lang/go"),
+})
+
+// SPARQL query
+results, _ := rdf.SPARQLSelect(`SELECT ?s ?p ?o WHERE { ?s ?p ?o . }`)
+
+// ASK query
+exists, _ := rdf.SPARQLAsk(`ASK WHERE { <http://example.org/person/1> ?p ?o . }`)
+```
+
+### Ontology Management
+
+```go
+o := db.Ontology()
+
+// Define ontology
+o.DefineClass("http://example.org/Person", "")
+o.DefineClass("http://example.org/Developer", "http://example.org/Person")
+o.DefineProperty("http://example.org/knows", "http://example.org/Person", "http://example.org/Person")
+
+// Add facts
+o.AddFact("http://example.org/person/alice", "http://example.org/knows", "Bob")
+
+// RDFS inference (materialize new triples)
+count, _ := o.Infer()
+
+// SHACL validation
+report, _ := o.Validate()
+```
+
+### KnowledgeMemory (Recall/Reflect/Consolidate)
+
+```go
+km := db.KnowledgeMemory(nil) // nil = use rule-based reflector
+
+// Recall: fused memory + knowledge + graph expansion
+resp, _ := km.Recall(ctx, knowledge.KnowledgeMemoryRecallRequest{
+    Query:         "what does the user like?",
+    TopKMemories:  5,
+    TopKKnowledge: 4,
+    MaxHops:       2, // graph expansion depth
+})
+
+// Reflect: synthesize structured summary
+reflection, _ := km.Reflect(ctx, knowledge.KnowledgeMemoryReflectRequest{
+    Query: "user preferences",
+})
+fmt.Println("Summary:", reflection.Summary)
+fmt.Println("Themes:", reflection.Themes)
+
+// Consolidate: store summary + optionally promote to knowledge
+consolidated, _ := km.Consolidate(ctx, knowledge.KnowledgeMemoryConsolidateRequest{
+    Reflect: knowledge.KnowledgeMemoryReflectRequest{
+        Query: "user preferences",
+    },
+    PromoteToKnowledge: true,
+})
+```
+
+### Auto-Retain (Automatic Fact Extraction)
+
+```go
+db.SetFactExtractor(func(ctx context.Context, msgs []*types.Message) ([]gracedb.ExtractedFact, error) {
+    // Extract facts from conversation (can use LLM here)
+    return []gracedb.ExtractedFact{
+        {ID: "fact-1", Content: "User likes Go", Type: "preference"},
+    }, nil
+})
+
+db.SetAutoRetain(gracedb.AutoRetainConfig{
+    Enabled:      true,
+    WindowSize:   6,
+    TriggerEvery: 2, // extract every 2 messages
+})
+
+// AddMessage now triggers extraction automatically
+db.AddMessage(&types.Message{SessionID: "sess-1", Role: "user", Content: "I like Go"})
+db.AddMessage(&types.Message{SessionID: "sess-1", Role: "assistant", Content: "Go is great!"})
+// → AutoRetain fires, extracts facts, stores as memory
+```
+
+### Aggregation
+
+```go
+// Simple aggregation
+result, _ := db.Aggregate("docs", "score", store.AggAvg)
+fmt.Printf("Average score: %.2f\n", result.Avg)
+
+// GROUP BY aggregation
+groups, _ := db.GroupAggregate("docs", "category", "price", store.AggAvg)
+for category, r := range groups {
+    fmt.Printf("%s: avg=%.2f, count=%d\n", category, r.Avg, r.Count)
+}
+```
+
+### MCP Server
+
+```go
+server := db.NewMCPServer("gracedb", "1.0.0")
+server.RunStdio(context.Background())
+```
+
+### Backup & Restore
+
+```go
+db.Backup("/tmp/backup.db")
+
+db2, _ := gracedb.Open("/tmp/restored")
+db2.Restore("/tmp/backup.db")
+```
+
+## Index Management
+
+```go
+// Load index (from snapshot or rebuild) — call on startup
+db.LoadIndex("docs")
+
+// Save index snapshot
+db.SaveIndex("docs")
+
+// Rebuild FTS index
+db.RebuildIndex("docs")
+```
+
+**Important**: Call `LoadIndex` after startup, otherwise search falls back to full scan (correct but slow).
+
+## Storage Key Format
+
+| Key Pattern | Purpose |
+|-------------|---------|
+| `coll:<name>` | Collection metadata |
+| `emb:<cid>:<eid>` | Embedding metadata |
+| `emb:vec:<cid>:<eid>` | Vector data |
+| `fts:<token>:<cid>:<eid>` | FTS inverted index (value = TF count) |
+| `graph:node:<id>` | Graph node |
+| `graph:edge:<id>` | Graph edge |
+| `rdf:t:<id>` | RDF triple |
+| `idx:snapshot:<cid>` | Vector index snapshot |
+| `sess:<id>` | Session |
+| `mem:bucket:<bucket>:<id>` | Memory |
+
+## Examples
 
 ```bash
 go run examples/main.go
 ```
 
-## 测试
+## Testing
 
 ```bash
-go test ./...              # 全部测试
-go test -v ./pkg/index/    # 详细输出
-go test -bench=. ./pkg/store/  # 基准测试
+go test ./...              # All tests
+go test -v ./pkg/index/    # Verbose output
+go test -bench=. ./pkg/store/  # Benchmarks
 ```
 
-## 许可证
+## License
 
 MIT

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/dshmyz/gracedb/pkg/graph"
+	"github.com/dshmyz/gracedb/pkg/knowledge"
 	"github.com/dshmyz/gracedb/pkg/mcp"
 	"github.com/dshmyz/gracedb/pkg/types"
 )
@@ -38,6 +39,8 @@ func (t *GraphRAGToolbox) Definitions() []mcp.ToolDef {
 		{Name: "save_memory", Description: "Save a memory with scope", InputSchema: map[string]any{"memory_id": "string", "content": "string", "scope": "string"}},
 		{Name: "expand_graph", Description: "Expand a graph neighborhood around nodes", InputSchema: map[string]any{"node_ids": "[]string", "max_depth": "int"}},
 		{Name: "recall_knowledge_memory", Description: "Fused recall across memory and knowledge", InputSchema: map[string]any{"query": "string", "top_k": "int"}},
+		{Name: "reflect", Description: "Synthesize retrieved context into structured reflection", InputSchema: map[string]any{"query": "string", "top_k": "int"}},
+		{Name: "consolidate", Description: "Reflect, store summary, optionally promote to knowledge", InputSchema: map[string]any{"query": "string", "promote": "bool"}},
 		{Name: "build_context", Description: "Assemble chunk text into a prompt context pack", InputSchema: map[string]any{"query": "string", "max_chars": "int"}},
 	}
 }
@@ -57,6 +60,10 @@ func (t *GraphRAGToolbox) Call(ctx context.Context, name string, payload map[str
 		return t.callExpandGraph(payload)
 	case "recall_knowledge_memory":
 		return t.callRecallKnowledgeMemory(payload)
+	case "reflect":
+		return t.callReflect(payload)
+	case "consolidate":
+		return t.callConsolidate(payload)
 	case "build_context":
 		return t.callBuildContext(payload)
 	default:
@@ -243,4 +250,64 @@ func (t *GraphRAGToolbox) callBuildContext(payload map[string]any) (any, error) 
 	}
 
 	return map[string]any{"query": query, "text": contextText, "char_count": len(contextText)}, nil
+}
+
+func (t *GraphRAGToolbox) callReflect(payload map[string]any) (any, error) {
+	query, _ := payload["query"].(string)
+	if query == "" {
+		return nil, fmt.Errorf("query is required")
+	}
+	topK, _ := payload["top_k"].(int)
+	if topK <= 0 {
+		topK = 5
+	}
+
+	km := t.db.KnowledgeMemory(nil)
+	reflection, err := km.Reflect(context.Background(), knowledge.KnowledgeMemoryReflectRequest{
+		Query:         query,
+		TopKMemories:  topK,
+		TopKKnowledge: topK,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"query":    query,
+		"summary":  reflection.Summary,
+		"themes":   reflection.Themes,
+		"entities": reflection.Entities,
+		"facts":    reflection.Facts,
+	}, nil
+}
+
+func (t *GraphRAGToolbox) callConsolidate(payload map[string]any) (any, error) {
+	query, _ := payload["query"].(string)
+	if query == "" {
+		return nil, fmt.Errorf("query is required")
+	}
+	promote, _ := payload["promote"].(bool)
+
+	km := t.db.KnowledgeMemory(nil)
+	resp, err := km.Consolidate(context.Background(), knowledge.KnowledgeMemoryConsolidateRequest{
+		Reflect: knowledge.KnowledgeMemoryReflectRequest{
+			Query:         query,
+			TopKMemories:  5,
+			TopKKnowledge: 4,
+		},
+		PromoteToKnowledge: promote,
+	})
+	if err != nil {
+		return nil, err
+	}
+	result := map[string]any{
+		"query":   query,
+		"summary": resp.Reflection.Summary,
+	}
+	if resp.Memory != nil {
+		result["memory_id"] = resp.Memory.ID
+	}
+	if resp.Knowledge != nil {
+		result["knowledge_id"] = resp.Knowledge.ID
+	}
+	return result, nil
 }

@@ -47,6 +47,14 @@ func WithEmbedder(e types.Embedder) Option {
 	}
 }
 
+// WithIndexTypes sets multiple vector index types for hybrid search.
+// Use instead of WithIndexType when you want to combine indexes (e.g., hnsw + lsh).
+func WithIndexTypes(idxTypes []string) Option {
+	return func(c *types.Config) {
+		c.IndexTypes = idxTypes
+	}
+}
+
 // Open opens or creates a gracedb database.
 func Open(path string, opts ...Option) (*DB, error) {
 	cfg := types.DefaultConfig()

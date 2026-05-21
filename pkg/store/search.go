@@ -49,16 +49,28 @@ func (s *BadgerStore) Search(collectionName string, query []float32, opts types.
 		}
 	}
 
-	// If only one search type, return directly
+	// If only one search type, apply reranker and return.
 	if !useVector || len(vectorResults) == 0 {
+		if opts.Reranker != nil && len(ftsResults) > 0 {
+			return opts.Reranker.Rerank(opts.QueryText, ftsResults)
+		}
 		return ftsResults, nil
 	}
 	if !useText || len(ftsResults) == 0 {
+		if opts.Reranker != nil && len(vectorResults) > 0 {
+			return opts.Reranker.Rerank(opts.QueryText, vectorResults)
+		}
 		return vectorResults, nil
 	}
 
 	// Hybrid: RRF fusion
-	return rrfFusion(s, collectionID, vectorResults, ftsResults, opts.TopK), nil
+	results := rrfFusion(s, collectionID, vectorResults, ftsResults, opts.TopK)
+
+	// Apply reranker if configured.
+	if opts.Reranker != nil && len(results) > 0 {
+		return opts.Reranker.Rerank(opts.QueryText, results)
+	}
+	return results, nil
 }
 
 // vectorSearch performs vector similarity search using in-memory index or flat scan.
@@ -344,7 +356,19 @@ func (s *BadgerStore) SaveIndex(collectionName string) error {
 }
 
 func (s *BadgerStore) newIndex() index.Index {
-	switch s.idxType {
+	// Multi-index mode: combine multiple index types.
+	if len(s.idxTypes) > 1 {
+		indexes := make([]index.Index, len(s.idxTypes))
+		for i, t := range s.idxTypes {
+			indexes[i] = s.makeIndex(t)
+		}
+		return index.NewMultiIndex(indexes, nil)
+	}
+	return s.makeIndex(s.idxType)
+}
+
+func (s *BadgerStore) makeIndex(idxType string) index.Index {
+	switch idxType {
 	case "hnsw":
 		cfg := s.config.HNSWConfig
 		if cfg == nil {

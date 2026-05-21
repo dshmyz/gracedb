@@ -3,6 +3,8 @@ package gracedb
 import (
 	"context"
 	"testing"
+
+	"github.com/dshmyz/gracedb/pkg/types"
 )
 
 func TestToolbox_Definitions(t *testing.T) {
@@ -11,8 +13,8 @@ func TestToolbox_Definitions(t *testing.T) {
 	ctx := context.Background()
 
 	defs := tbx.Definitions()
-	if len(defs) != 7 {
-		t.Fatalf("expected 7 tool definitions, got %d", len(defs))
+	if len(defs) != 9 {
+		t.Fatalf("expected 9 tool definitions, got %d", len(defs))
 	}
 
 	expected := []string{
@@ -22,6 +24,8 @@ func TestToolbox_Definitions(t *testing.T) {
 		"save_memory",
 		"expand_graph",
 		"recall_knowledge_memory",
+		"reflect",
+		"consolidate",
 		"build_context",
 	}
 	for i, name := range expected {
@@ -275,6 +279,91 @@ func TestToolbox_BuildContext_MissingQuery(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := tbx.Call(ctx, "build_context", map[string]any{})
+	if err == nil {
+		t.Fatal("expected error for missing query")
+	}
+}
+
+func TestToolbox_Reflect(t *testing.T) {
+	db := testDB(t)
+	tbx := db.GraphRAGTools()
+	ctx := context.Background()
+
+	if _, err := db.CreateCollection("default"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Insert some memory to reflect on.
+	_, _ = db.SaveMemory(types.MemorySaveRequest{
+		MemoryID:  "mem-reflect-1",
+		Content:   "User prefers Python over Go and likes machine learning",
+		Scope:     "global",
+	})
+
+	resp, err := tbx.Call(ctx, "reflect", map[string]any{
+		"query": "python",
+		"top_k": 5,
+	})
+	if err != nil {
+		t.Fatalf("reflect: %v", err)
+	}
+	m := resp.(map[string]any)
+	if m["query"] != "python" {
+		t.Errorf("expected query 'python', got %v", m["query"])
+	}
+	if _, ok := m["summary"]; !ok {
+		t.Error("expected summary in response")
+	}
+}
+
+func TestToolbox_Reflect_MissingQuery(t *testing.T) {
+	db := testDB(t)
+	tbx := db.GraphRAGTools()
+	ctx := context.Background()
+
+	_, err := tbx.Call(ctx, "reflect", map[string]any{})
+	if err == nil {
+		t.Fatal("expected error for missing query")
+	}
+}
+
+func TestToolbox_Consolidate(t *testing.T) {
+	db := testDB(t)
+	tbx := db.GraphRAGTools()
+	ctx := context.Background()
+
+	if _, err := db.CreateCollection("default"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	_, _ = db.SaveMemory(types.MemorySaveRequest{
+		MemoryID:  "mem-consolidate-1",
+		Content:   "User likes coffee and prefers tea over juice",
+		Scope:     "global",
+	})
+
+	resp, err := tbx.Call(ctx, "consolidate", map[string]any{
+		"query":   "coffee",
+		"promote": false,
+	})
+	if err != nil {
+		t.Fatalf("consolidate: %v", err)
+	}
+	m := resp.(map[string]any)
+	if _, ok := m["summary"]; !ok {
+		t.Error("expected summary in response")
+	}
+	if _, ok := m["memory_id"]; !ok {
+		t.Error("expected memory_id in response")
+	}
+}
+
+func TestToolbox_Consolidate_MissingQuery(t *testing.T) {
+	db := testDB(t)
+	tbx := db.GraphRAGTools()
+	ctx := context.Background()
+
+	_, err := tbx.Call(ctx, "consolidate", map[string]any{})
 	if err == nil {
 		t.Fatal("expected error for missing query")
 	}
