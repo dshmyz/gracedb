@@ -2,6 +2,7 @@ package gracedb
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/dshmyz/gracedb/pkg/store"
@@ -108,11 +109,28 @@ func (db *DB) Search(collectionName string, query []float32, opts types.SearchOp
 	ctx := spanWithCollection(context.Background(), "Search", collectionName)
 	defer endSpan(ctx, nil)
 
+	// Ensure a context is set for timeout/cancellation support.
+	if opts.Context == nil {
+		opts.Context = context.Background()
+	}
+
 	results, err := db.store_.Search(collectionName, query, opts)
 	if err != nil {
 		return nil, err
 	}
 	recordSearchDuration(ctx, start)
+
+	// Log slow queries at the facade level too.
+	elapsed := time.Since(start)
+	if elapsed > time.Second {
+		slog.Warn("slow query",
+			"collection", collectionName,
+			"elapsed", elapsed,
+			"topK", opts.TopK,
+			"results", len(results),
+		)
+	}
+
 	return results, nil
 }
 
@@ -162,34 +180,10 @@ func (db *DB) SaveIndex(collectionName string) error {
 	return db.store_.SaveIndex(collectionName)
 }
 
-// RebuildIndex rebuilds the search index for all embeddings in a collection.
+// RebuildIndex rebuilds the vector search index for a collection from stored vectors.
+// Use after restore from backup or if the in-memory index is corrupted.
 func (db *DB) RebuildIndex(collectionName string) error {
-	coll, err := db.store_.GetCollection(collectionName)
-	if err != nil {
-		return err
-	}
-
-	ids, err := db.store_.ListEmbeddingIDs(coll.ID)
-	if err != nil {
-		return err
-	}
-
-	for _, embID := range ids {
-		// Clear existing FTS entries first to avoid duplicates.
-		if err := db.store_.UnindexFTS(coll.ID, embID); err != nil {
-			return err
-		}
-		emb, err := db.store_.GetEmbedding(coll.ID, embID, false)
-		if err != nil {
-			continue
-		}
-		if emb.Content != "" {
-			if err := db.store_.IndexFTS(coll.ID, embID, emb.Content); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return db.store_.RebuildVectorIndex(collectionName)
 }
 
 // Compile-time check that BadgerStore implements Store.

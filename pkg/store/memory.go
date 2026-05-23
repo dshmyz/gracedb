@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -251,6 +252,11 @@ func (s *BadgerStore) SearchMemory(req types.MemorySearchRequest) (*types.Memory
 		return &types.MemorySearchResponse{Query: req.Query}, nil
 	}
 
+	ctx := req.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	// Search content keys in this bucket.
 	type scoredMem struct {
 		memoryID string
@@ -265,7 +271,16 @@ func (s *BadgerStore) SearchMemory(req types.MemorySearchRequest) (*types.Memory
 		it := txn.NewIterator(opts)
 		defer it.Close()
 
+		var count int
 		for it.Rewind(); it.Valid(); it.Next() {
+			// Check context periodically during scan.
+			if count%100 == 0 {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+			}
+			count++
+
 			key := it.Item().Key()
 			memoryID := string(key[len(prefix):])
 

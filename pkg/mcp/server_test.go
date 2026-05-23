@@ -1,10 +1,10 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
-	"os"
 	"testing"
 )
 
@@ -239,22 +239,6 @@ func TestServer_FromToolbox(t *testing.T) {
 }
 
 func TestServer_RunStdio(t *testing.T) {
-	// Create pipes to simulate stdin/stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	defer r.Close()
-	defer w.Close()
-
-	// Save original stdin/stdout
-	oldStdin := os.Stdin
-	oldStdout := os.Stdout
-	defer func() {
-		os.Stdin = oldStdin
-		os.Stdout = oldStdout
-	}()
-
 	s := NewServer("stdio-test", "1.0")
 	s.RegisterTool(&Tool{
 		Name: "ping",
@@ -263,33 +247,85 @@ func TestServer_RunStdio(t *testing.T) {
 		},
 	})
 
-	// Write a tools/call request to the pipe
-	reqJSON := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ping"}}` + "\n"
-	if _, err := w.Write([]byte(reqJSON)); err != nil {
+	// Bidirectional pipe pair: client writes go to server, server writes go to client
+	serverR, clientW := io.Pipe() // server reads from serverR, client writes to clientW
+	clientR, serverW := io.Pipe() // client reads from clientR, server writes to serverW
+
+	serverRW := struct {
+		io.Reader
+		io.Writer
+	}{serverR, serverW}
+	clientRW := struct {
+		io.Reader
+		io.Writer
+	}{clientR, clientW}
+
+	serverTransport := NewPipeTransport(serverRW)
+	clientTransport := NewPipeTransport(clientRW)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.Serve(context.Background(), serverTransport)
+	}()
+
+	// Send request from client side
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ping"}}` + "\n"
+	if _, err := clientRW.Write([]byte(req)); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 
-	// We can't fully test RunStdio without replacing os.Stdin/Stdout
-	// at the file descriptor level, so just verify the server processes
-	// the request correctly via HandleRequest
-	req := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "tools/call",
-		"params": map[string]any{
-			"name": "ping",
-		},
+	// Read response
+	respData, err := clientTransport.Read()
+	if err != nil {
+		t.Fatalf("read response: %v", err)
 	}
 
-	resp, err := s.HandleRequest(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handle call: %v", err)
+	var resp map[string]any
+	if err := json.Unmarshal(respData, &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
 	}
 
 	result := resp["result"].(map[string]any)
-	content := result["content"].([]map[string]any)
-	if content[0]["text"] != "\"pong\"" {
-		t.Errorf("expected '\"pong\"', got %v", content[0]["text"])
+	content := result["content"].([]any)
+	first := content[0].(map[string]any)
+	if first["text"] != "\"pong\"" {
+		t.Errorf("expected '\"pong\"', got %v", first["text"])
+	}
+
+	// Close client's write side to signal EOF to server, then verify Serve returns cleanly
+	clientW.Close()
+	if err := <-errCh; err != nil {
+		t.Fatalf("Serve returned error: %v", err)
+	}
+}
+
+func TestPipeTransport(t *testing.T) {
+	var buf bytes.Buffer
+	tr := NewPipeTransport(&buf)
+
+	// Write and read through the same transport (unidirectional test)
+	if err := tr.Write([]byte(`{"msg":"hello"}`)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	msg, err := tr.Read()
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(msg) != `{"msg":"hello"}` {
+		t.Errorf("expected hello, got %s", msg)
+	}
+
+	// Second message
+	if err := tr.Write([]byte(`{"msg":"world"}`)); err != nil {
+		t.Fatalf("write 2: %v", err)
+	}
+	msg2, err := tr.Read()
+	if err != nil {
+		t.Fatalf("read 2: %v", err)
+	}
+	if string(msg2) != `{"msg":"world"}` {
+		t.Errorf("expected world, got %s", msg2)
 	}
 }
 

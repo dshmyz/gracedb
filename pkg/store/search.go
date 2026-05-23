@@ -1,8 +1,11 @@
 package store
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"sort"
+	"time"
 
 	"github.com/dgraph-io/badger/v4"
 	"github.com/dshmyz/gracedb/pkg/index"
@@ -15,7 +18,10 @@ type pair struct {
 }
 
 // Search performs vector similarity search, FTS, or hybrid RRF-fused search.
+// Context from opts is checked during long-running flat scan iterations.
 func (s *BadgerStore) Search(collectionName string, query []float32, opts types.SearchOptions) ([]types.ScoredEmbedding, error) {
+	start := time.Now()
+
 	coll, err := s.GetCollection(collectionName)
 	if err != nil {
 		return nil, err
@@ -32,11 +38,16 @@ func (s *BadgerStore) Search(collectionName string, query []float32, opts types.
 		}
 	}
 
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	var vectorResults []types.ScoredEmbedding
 	var ftsResults []types.ScoredEmbedding
 
 	if useVector && len(query) > 0 {
-		vectorResults, err = s.vectorSearch(collectionID, query, opts)
+		vectorResults, err = s.vectorSearch(ctx, collectionID, query, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -70,11 +81,25 @@ func (s *BadgerStore) Search(collectionName string, query []float32, opts types.
 	if opts.Reranker != nil && len(results) > 0 {
 		return opts.Reranker.Rerank(opts.QueryText, results)
 	}
+
+	// Log slow queries.
+	if s.config.SlowQueryThreshold > 0 {
+		elapsed := time.Since(start)
+		if elapsed >= s.config.SlowQueryThreshold {
+			slog.Warn("slow search",
+				"collection", collectionName,
+				"elapsed", elapsed,
+				"topK", opts.TopK,
+			)
+		}
+	}
+
 	return results, nil
 }
 
 // vectorSearch performs vector similarity search using in-memory index or flat scan.
-func (s *BadgerStore) vectorSearch(collectionID string, query []float32, opts types.SearchOptions) ([]types.ScoredEmbedding, error) {
+// Respects ctx cancellation during flat scan iteration.
+func (s *BadgerStore) vectorSearch(ctx context.Context, collectionID string, query []float32, opts types.SearchOptions) ([]types.ScoredEmbedding, error) {
 	var rawResults []types.ScoredEmbedding
 
 	// Try in-memory index first.
@@ -128,6 +153,13 @@ func (s *BadgerStore) vectorSearch(collectionID string, query []float32, opts ty
 
 	pairs := make([]pair, 0, len(vectors))
 	for embID, vec := range vectors {
+		// Check context cancellation periodically during flat scan.
+		if len(pairs)%100 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+
 		score := CosineSimilarity(query, vec)
 		if score >= opts.Threshold {
 			pairs = append(pairs, pair{embID, score})
@@ -315,7 +347,9 @@ func (s *BadgerStore) LoadIndex(collectionName string) error {
 	// Try loading snapshot from Badger.
 	if data, err := s.loadIndexSnapshot(coll.ID); err == nil && len(data) > 0 {
 		if err := idx.Unmarshal(data); err == nil {
+			s.mu.Lock()
 			s.indexes[coll.ID] = idx
+			s.mu.Unlock()
 			return nil
 		}
 	}
@@ -328,7 +362,9 @@ func (s *BadgerStore) LoadIndex(collectionName string) error {
 	for embID, vec := range vectors {
 		idx.Insert(vec, embID)
 	}
+	s.mu.Lock()
 	s.indexes[coll.ID] = idx
+	s.mu.Unlock()
 	return nil
 }
 
@@ -353,6 +389,47 @@ func (s *BadgerStore) SaveIndex(collectionName string) error {
 		key := []byte("idx:snapshot:" + coll.ID)
 		return txn.Set(key, data)
 	})
+}
+
+// RebuildVectorIndex drops the in-memory vector index for a collection and
+// rebuilds it from all stored vectors. Useful after restoring from backup or
+// recovering from index corruption.
+func (s *BadgerStore) RebuildVectorIndex(collectionName string) error {
+	coll, err := s.GetCollection(collectionName)
+	if err != nil {
+		return err
+	}
+
+	// Remove existing index.
+	s.mu.Lock()
+	delete(s.indexes, coll.ID)
+	s.mu.Unlock()
+
+	// Create fresh index.
+	idx := s.newIndex()
+	if idx == nil {
+		return nil
+	}
+
+	// Reload all vectors.
+	vectors, err := s.ReadVectors(coll.ID)
+	if err != nil {
+		return err
+	}
+
+	for embID, vec := range vectors {
+		idx.Insert(vec, embID)
+	}
+
+	s.mu.Lock()
+	s.indexes[coll.ID] = idx
+	s.mu.Unlock()
+
+	slog.Info("vector index rebuilt",
+		"collection", collectionName,
+		"vectors", len(vectors),
+	)
+	return nil
 }
 
 func (s *BadgerStore) newIndex() index.Index {

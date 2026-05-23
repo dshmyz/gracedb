@@ -1,6 +1,9 @@
 package types
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // Embedding represents a vector embedding with optional metadata.
 type Embedding struct {
@@ -42,6 +45,10 @@ type SearchOptions struct {
 	QueryText string
 	// Reranker applies secondary re-ranking after initial retrieval. Nil = skip.
 	Reranker Reranker
+	// Context carries a deadline/cancellation for search. If nil,
+	// context.Background() is used. Pass a context with timeout to prevent
+	// vector searches from blocking indefinitely.
+	Context context.Context
 }
 
 // Collection represents a namespace for embeddings.
@@ -93,6 +100,12 @@ type Config struct {
 	AutoSave         bool
 	ValueLogFileSize int64
 	Embedder         Embedder
+	// TTLInterval controls how often the background memory cleanup runs.
+	// Zero means no automatic cleanup.
+	TTLInterval time.Duration
+	// SlowQueryThreshold logs a warning when a search takes longer than this.
+	// Zero disables slow query detection.
+	SlowQueryThreshold time.Duration
 }
 
 // HNSWConfig holds HNSW index parameters.
@@ -114,7 +127,9 @@ func DefaultConfig() *Config {
 			EfConstruction: 64,
 			EfSearch:       50,
 		},
-		AutoSave: true,
+		AutoSave:             true,
+		TTLInterval:          5 * time.Minute,
+		SlowQueryThreshold:   time.Second,
 	}
 }
 

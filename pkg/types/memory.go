@@ -1,6 +1,9 @@
 package types
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 const (
 	MemoryScopeGlobal  = "global"
@@ -55,6 +58,9 @@ type MemorySearchRequest struct {
 	Scope            string
 	Namespace        string
 	TopK             int
+	// Context carries a deadline/cancellation for memory search. If nil,
+	// context.Background() is used.
+	Context context.Context
 }
 
 // MemorySearchHit is one scored memory result.

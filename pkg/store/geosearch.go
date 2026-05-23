@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"math"
 	"sort"
 	"strconv"
@@ -23,7 +24,11 @@ func (s *BadgerStore) SearchGeo(collectionName string, query GeoQuery, opts type
 		return nil, err
 	}
 
-	results, err := s.vectorSearch(coll.ID, nil, opts)
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	results, err := s.vectorSearch(ctx, coll.ID, nil, opts)
 	if err != nil {
 		return nil, err
 	}

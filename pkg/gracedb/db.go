@@ -1,6 +1,10 @@
 package gracedb
 
 import (
+	"context"
+	"log/slog"
+	"time"
+
 	"github.com/dshmyz/gracedb/pkg/graph"
 	"github.com/dshmyz/gracedb/pkg/mcp"
 	"github.com/dshmyz/gracedb/pkg/rdf"
@@ -47,6 +51,22 @@ func WithEmbedder(e types.Embedder) Option {
 	}
 }
 
+// WithTTLInterval sets the background memory cleanup interval.
+// Zero disables automatic cleanup.
+func WithTTLInterval(d time.Duration) Option {
+	return func(c *types.Config) {
+		c.TTLInterval = d
+	}
+}
+
+// WithSlowQueryThreshold sets the threshold for slow query logging.
+// Zero disables slow query detection.
+func WithSlowQueryThreshold(d time.Duration) Option {
+	return func(c *types.Config) {
+		c.SlowQueryThreshold = d
+	}
+}
+
 // WithIndexTypes sets multiple vector index types for hybrid search.
 // Use instead of WithIndexType when you want to combine indexes (e.g., hnsw + lsh).
 func WithIndexTypes(idxTypes []string) Option {
@@ -74,6 +94,9 @@ func Open(path string, opts ...Option) (*DB, error) {
 		graph_:   graph.NewGraphStore(s.DB()),
 		rdf_:     rdf.NewStore(s.DB()),
 	}
+
+	// Start background memory cleanup.
+	s.StartMemoryCleanup(context.Background())
 
 	return db, nil
 }
@@ -105,7 +128,13 @@ func (db *DB) NewMCPServer(name, version string) *mcp.Server {
 	return mcp.FromToolbox(name, version, defs, toolbox.Call)
 }
 
-// Close closes the database.
+// Ready reports whether the database is accessible.
+func (db *DB) Ready() bool {
+	return db.store_.Ready()
+}
+
+// Close drains pending operations and closes the database.
 func (db *DB) Close() error {
+	slog.Info("gracedb: closing database")
 	return db.store_.Close()
 }
