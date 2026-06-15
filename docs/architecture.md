@@ -132,12 +132,35 @@ db.SaveKnowledge(collection, id, title, content, opts)
 ```
 db.SaveMemory(req)
     │
+    ├──► db.embedder.Embed(content)     # 有 Embedder 时生成语义向量
+    │
     ├──► resolveMemoryBucket(scope, userID, sessionID, namespace)
-    │       ├── global   → mem:bucket:global:{namespace}:{id}
-    │       ├── user     → mem:bucket:user:{userID}:{namespace}:{id}
-    │       └── session  → mem:bucket:session:{sessionID}:{namespace}:{id}
+    │       ├── global   → memory:global:{namespace}
+    │       ├── user     → memory:user:{userID}:{namespace}
+    │       └── session  → memory:session:{sessionID}:{namespace}
     │
     └──► store.SaveMemory(...)
+            ├── mem:<bucketID>:<id>         # 元数据
+            ├── mem:content:<bucketID>:<id> # 内容
+            ├── mem:vec:<bucketID>:<id>     # 语义向量
+            ├── mem:fts:<term>:<bucketID>:<id> # 词法倒排索引
+            ├── mem:idx:<id>                # id → bucketID
+            └── memoryIndexes[bucketID]     # 内存向量索引
+```
+
+### 记忆检索流程
+
+```
+db.SearchMemory(req)
+    │
+    ├──► db.embedder.Embed(query)       # 有 Embedder 时生成查询向量
+    │
+    └──► store.SearchMemory(...)
+            ├── bucket 内向量检索
+            ├── bucket 内 mem:fts 倒排索引检索
+            ├── semantic/lexical/importance/recency 分数融合
+            │   └── final = semantic*0.60 + lexical*0.25 + importance*0.10 + recency*0.05
+            └── 过滤过期记忆后返回 TopK
 ```
 
 ## 向量索引体系

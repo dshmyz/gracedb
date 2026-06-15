@@ -4,17 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
-	"github.com/google/uuid"
 	"github.com/dshmyz/gracedb/pkg/types"
+	"github.com/google/uuid"
 )
 
 const (
-	memPrefix = "mem:"
+	memPrefix     = "mem:"
+	memVecPrefix  = "mem:vec:"
+	memFTSPrefix  = "mem:fts:"
+	memContPrefix = "mem:content:"
 )
 
 // resolveMemoryBucket determines the bucket ID for a memory.
@@ -73,13 +77,22 @@ func (s *BadgerStore) SaveMemory(req types.MemorySaveRequest) (*types.MemoryReco
 	now := time.Now()
 	metadata := cloneAnyMap(req.Metadata)
 	metadata["kind"] = "memory"
+	metadata["user_id"] = req.UserID
+	metadata["session_id"] = req.SessionID
 	metadata["scope"] = scope
 	metadata["namespace"] = req.Namespace
 	if metadata["namespace"] == "" {
 		metadata["namespace"] = "default"
 	}
+	role := req.Role
+	if role == "" {
+		role = "memory"
+	}
+	metadata["role"] = role
 	metadata["importance"] = req.Importance
 	metadata["ttl_seconds"] = req.TTLSeconds
+	metadata["created_at"] = now.Format(time.RFC3339Nano)
+	metadata["updated_at"] = now.Format(time.RFC3339Nano)
 
 	var expiresAt *time.Time
 	if req.TTLSeconds > 0 {
@@ -93,11 +106,6 @@ func (s *BadgerStore) SaveMemory(req types.MemorySaveRequest) (*types.MemoryReco
 		return nil, err
 	}
 
-	role := req.Role
-	if role == "" {
-		role = "memory"
-	}
-
 	record := &types.MemoryRecord{
 		ID:         req.MemoryID,
 		UserID:     req.UserID,
@@ -106,32 +114,53 @@ func (s *BadgerStore) SaveMemory(req types.MemorySaveRequest) (*types.MemoryReco
 		Namespace:  metadata["namespace"].(string),
 		Role:       role,
 		Content:    req.Content,
+		Vector:     req.Vector,
 		Metadata:   metadata,
 		Importance: req.Importance,
 		TTLSeconds: req.TTLSeconds,
 		ExpiresAt:  expiresAt,
 		CreatedAt:  now,
+		UpdatedAt:  now,
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return record, s.Update(func(txn *badger.Txn) error {
+	err = s.Update(func(txn *badger.Txn) error {
 		memKey := []byte(fmt.Sprintf("%s%s:%s", memPrefix, bucketID, req.MemoryID))
 		if err := txn.Set(memKey, metadataJSON); err != nil {
 			return err
 		}
 
 		// Also store full content in a content key.
-		contentKey := []byte(fmt.Sprintf("%scontent:%s:%s", memPrefix, bucketID, req.MemoryID))
+		contentKey := []byte(fmt.Sprintf("%s%s:%s", memContPrefix, bucketID, req.MemoryID))
 		if err := txn.Set(contentKey, []byte(req.Content)); err != nil {
 			return err
+		}
+		if err := deleteMemoryFTSEntries(txn, bucketID, req.MemoryID); err != nil {
+			return err
+		}
+		if err := indexMemoryFTSTxn(txn, bucketID, req.MemoryID, req.Content); err != nil {
+			return err
+		}
+		if len(req.Vector) > 0 {
+			vecKey := []byte(fmt.Sprintf("%s%s:%s", memVecPrefix, bucketID, req.MemoryID))
+			if err := txn.Set(vecKey, vectorToBytes(req.Vector)); err != nil {
+				return err
+			}
 		}
 
 		// Index: memoryID -> bucketID for lookup by ID alone.
 		idxKey := []byte(fmt.Sprintf("mem:idx:%s", req.MemoryID))
 		return txn.Set(idxKey, []byte(bucketID))
 	})
+	if err != nil {
+		return nil, err
+	}
+	if len(req.Vector) > 0 {
+		s.upsertMemoryIndex(bucketID, req.MemoryID, req.Vector)
+	}
+	return record, err
 }
 
 // GetMemory fetches a memory record by ID.
@@ -161,6 +190,9 @@ func (s *BadgerStore) UpdateMemory(req types.MemoryUpdateRequest) (*types.Memory
 		if req.Content != nil {
 			record.Content = *req.Content
 		}
+		if req.Vector != nil {
+			record.Vector = req.Vector
+		}
 		if req.Importance != nil {
 			record.Importance = *req.Importance
 		}
@@ -182,6 +214,8 @@ func (s *BadgerStore) UpdateMemory(req types.MemoryUpdateRequest) (*types.Memory
 
 		record.Metadata["importance"] = record.Importance
 		record.Metadata["ttl_seconds"] = record.TTLSeconds
+		record.UpdatedAt = time.Now()
+		record.Metadata["updated_at"] = record.UpdatedAt.Format(time.RFC3339Nano)
 
 		metadataJSON, err := json.Marshal(record.Metadata)
 		if err != nil {
@@ -197,9 +231,30 @@ func (s *BadgerStore) UpdateMemory(req types.MemoryUpdateRequest) (*types.Memory
 			return err
 		}
 
-		contentKey := []byte(fmt.Sprintf("%scontent:%s:%s", memPrefix, bucketID, req.MemoryID))
-		return txn.Set(contentKey, []byte(record.Content))
+		contentKey := []byte(fmt.Sprintf("%s%s:%s", memContPrefix, bucketID, req.MemoryID))
+		if err := txn.Set(contentKey, []byte(record.Content)); err != nil {
+			return err
+		}
+		if req.Content != nil {
+			if err := deleteMemoryFTSEntries(txn, bucketID, req.MemoryID); err != nil {
+				return err
+			}
+			if err := indexMemoryFTSTxn(txn, bucketID, req.MemoryID, record.Content); err != nil {
+				return err
+			}
+		}
+		vecKey := []byte(fmt.Sprintf("%s%s:%s", memVecPrefix, bucketID, req.MemoryID))
+		if req.Vector != nil {
+			return txn.Set(vecKey, vectorToBytes(req.Vector))
+		}
+		return nil
 	})
+	if err == nil && req.Vector != nil && record != nil {
+		bucketID, bucketErr := s.memoryBucketID(record.ID)
+		if bucketErr == nil {
+			s.upsertMemoryIndex(bucketID, record.ID, req.Vector)
+		}
+	}
 	return record, err
 }
 
@@ -218,7 +273,8 @@ func (s *BadgerStore) DeleteMemory(memoryID string) error {
 		}
 		keys := [][]byte{
 			[]byte(fmt.Sprintf("%s%s:%s", memPrefix, bucketID, memoryID)),
-			[]byte(fmt.Sprintf("%scontent:%s:%s", memPrefix, bucketID, memoryID)),
+			[]byte(fmt.Sprintf("%s%s:%s", memContPrefix, bucketID, memoryID)),
+			[]byte(fmt.Sprintf("%s%s:%s", memVecPrefix, bucketID, memoryID)),
 			[]byte(fmt.Sprintf("mem:idx:%s", memoryID)),
 		}
 		for _, k := range keys {
@@ -226,11 +282,17 @@ func (s *BadgerStore) DeleteMemory(memoryID string) error {
 				return err
 			}
 		}
+		if err := deleteMemoryFTSEntries(txn, bucketID, memoryID); err != nil {
+			return err
+		}
+		if idx, ok := s.memoryIndexes[bucketID]; ok {
+			idx.RemoveVector(memoryID)
+		}
 		return nil
 	})
 }
 
-// SearchMemory searches memories in a bucket using FTS.
+// SearchMemory searches memories in a bucket using semantic and lexical signals.
 func (s *BadgerStore) SearchMemory(req types.MemorySearchRequest) (*types.MemorySearchResponse, error) {
 	scope, bucketID, err := resolveMemoryBucket(&types.MemorySaveRequest{
 		UserID:    req.UserID,
@@ -247,8 +309,8 @@ func (s *BadgerStore) SearchMemory(req types.MemorySearchRequest) (*types.Memory
 		req.TopK = 5
 	}
 
-	tokens := Tokenize(req.Query)
-	if len(tokens) == 0 {
+	hasLexicalQuery := strings.TrimSpace(req.Query) != ""
+	if !hasLexicalQuery && len(req.QueryVector) == 0 {
 		return &types.MemorySearchResponse{Query: req.Query}, nil
 	}
 
@@ -256,94 +318,100 @@ func (s *BadgerStore) SearchMemory(req types.MemorySearchRequest) (*types.Memory
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	weights := memorySearchWeights(req)
 
-	// Search content keys in this bucket.
-	type scoredMem struct {
-		memoryID string
-		score    float64
+	type memoryScore struct {
+		memoryID        string
+		finalScore      float64
+		semanticScore   float64
+		lexicalScore    float64
+		importanceScore float64
+		recencyScore    float64
 	}
-	matched := make(map[string]*scoredMem)
-
-	prefix := []byte(fmt.Sprintf("%scontent:%s:", memPrefix, bucketID))
-	err = s.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.Prefix = prefix
-		it := txn.NewIterator(opts)
-		defer it.Close()
-
-		var count int
-		for it.Rewind(); it.Valid(); it.Next() {
-			// Check context periodically during scan.
-			if count%100 == 0 {
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-			}
-			count++
-
-			key := it.Item().Key()
-			memoryID := string(key[len(prefix):])
-
-			var content []byte
-			it.Item().Value(func(val []byte) error {
-				content = cloneBytes(val)
-				return nil
-			})
-
-			// Simple token match scoring.
-			text := strings.ToLower(string(content))
-			var score float64
-			for _, token := range tokens {
-				if strings.Contains(text, strings.ToLower(token)) {
-					score += 1.0
-				}
-			}
-			if score > 0 {
-				matched[memoryID] = &scoredMem{memoryID: memoryID, score: score}
-			}
+	matched := make(map[string]*memoryScore)
+	ensureScore := func(memoryID string) *memoryScore {
+		score, ok := matched[memoryID]
+		if !ok {
+			score = &memoryScore{memoryID: memoryID}
+			matched[memoryID] = score
 		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
+		return score
+	}
+
+	if len(req.QueryVector) > 0 {
+		vectorScores, err := s.searchMemoryVectors(ctx, bucketID, req.QueryVector, req.TopK*4)
+		if err != nil {
+			return nil, err
+		}
+		for memoryID, score := range vectorScores {
+			ms := ensureScore(memoryID)
+			ms.semanticScore = float64(score)
+		}
+	}
+
+	if hasLexicalQuery {
+		lexicalScores, err := s.searchMemoryFTS(ctx, bucketID, req.Query)
+		if err != nil {
+			return nil, err
+		}
+		for memoryID, score := range lexicalScores {
+			ms := ensureScore(memoryID)
+			ms.lexicalScore = score
+		}
 	}
 
 	if len(matched) == 0 {
 		return &types.MemorySearchResponse{Query: req.Query}, nil
 	}
 
-	// Sort by score.
-	var sorted []*scoredMem
-	for _, sm := range matched {
-		sorted = append(sorted, sm)
-	}
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].score > sorted[j].score
-	})
-	if len(sorted) > req.TopK {
-		sorted = sorted[:req.TopK]
-	}
-
-	// Load records.
-	var results []types.MemorySearchHit
-	for _, sm := range sorted {
+	candidates := make([]*memoryScore, 0, len(matched))
+	records := make(map[string]*types.MemoryRecord, len(matched))
+	now := time.Now()
+	for _, score := range matched {
+		var rec *types.MemoryRecord
 		err := s.View(func(txn *badger.Txn) error {
-			rec, err := s.loadMemory(txn, sm.memoryID)
-			if err != nil {
-				return err
-			}
-			if memoryExpired(rec) {
-				return nil
-			}
-			results = append(results, types.MemorySearchHit{
-				Memory: *rec,
-				Score:  sm.score,
-			})
-			return nil
+			var err error
+			rec, err = s.loadMemory(txn, score.memoryID)
+			return err
 		})
-		if err != nil {
+		if err != nil || rec == nil || memoryExpired(rec) {
 			continue
 		}
+		score.importanceScore = clamp01(rec.Importance)
+		score.recencyScore = memoryRecencyScore(rec, now)
+		score.finalScore = score.semanticScore*weights.semantic +
+			score.lexicalScore*weights.lexical +
+			score.importanceScore*weights.importance +
+			score.recencyScore*weights.recency
+		records[score.memoryID] = rec
+		candidates = append(candidates, score)
+	}
+	if len(candidates) == 0 {
+		return &types.MemorySearchResponse{Query: req.Query}, nil
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].finalScore > candidates[j].finalScore
+	})
+	if len(candidates) > req.TopK {
+		candidates = candidates[:req.TopK]
+	}
+
+	var results []types.MemorySearchHit
+	for _, sm := range candidates {
+		rec := records[sm.memoryID]
+		if rec == nil {
+			continue
+		}
+		results = append(results, types.MemorySearchHit{
+			Memory:          *rec,
+			Score:           sm.finalScore,
+			FinalScore:      sm.finalScore,
+			SemanticScore:   sm.semanticScore,
+			LexicalScore:    sm.lexicalScore,
+			ImportanceScore: sm.importanceScore,
+			RecencyScore:    sm.recencyScore,
+		})
 	}
 
 	return &types.MemorySearchResponse{
@@ -387,7 +455,7 @@ func (s *BadgerStore) loadMemory(txn *badger.Txn, memoryID string) (*types.Memor
 	}
 
 	// Load content.
-	contentKey := []byte(fmt.Sprintf("%scontent:%s:%s", memPrefix, bucketID, memoryID))
+	contentKey := []byte(fmt.Sprintf("%s%s:%s", memContPrefix, bucketID, memoryID))
 	var content string
 	cItem, cErr := txn.Get(contentKey)
 	if cErr == nil {
@@ -396,10 +464,19 @@ func (s *BadgerStore) loadMemory(txn *badger.Txn, memoryID string) (*types.Memor
 			return nil
 		})
 	}
+	var vector []float32
+	vecKey := []byte(fmt.Sprintf("%s%s:%s", memVecPrefix, bucketID, memoryID))
+	if vItem, vErr := txn.Get(vecKey); vErr == nil {
+		vItem.Value(func(val []byte) error {
+			vector = bytesToVector(cloneBytes(val))
+			return nil
+		})
+	}
 
 	record := &types.MemoryRecord{
 		ID:      memoryID,
 		Content: content,
+		Vector:  vector,
 	}
 
 	if v, ok := metadata["user_id"]; ok {
@@ -450,9 +527,310 @@ func (s *BadgerStore) loadMemory(txn *badger.Txn, memoryID string) (*types.Memor
 			}
 		}
 	}
+	if v, ok := metadata["created_at"]; ok {
+		if s, ok := v.(string); ok && s != "" {
+			if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+				record.CreatedAt = t
+			}
+		}
+	}
+	if v, ok := metadata["updated_at"]; ok {
+		if s, ok := v.(string); ok && s != "" {
+			if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+				record.UpdatedAt = t
+			}
+		}
+	}
 	record.Metadata = metadata
 
 	return record, nil
+}
+
+func (s *BadgerStore) upsertMemoryIndex(bucketID, memoryID string, vector []float32) {
+	if len(vector) == 0 {
+		return
+	}
+	idx, ok := s.memoryIndexes[bucketID]
+	if !ok {
+		idx = s.newIndex()
+		s.memoryIndexes[bucketID] = idx
+	}
+	if idx == nil {
+		return
+	}
+	idx.RemoveVector(memoryID)
+	idx.Insert(vector, memoryID)
+}
+
+func (s *BadgerStore) searchMemoryVectors(ctx context.Context, bucketID string, query []float32, topK int) (map[string]float32, error) {
+	if topK <= 0 {
+		topK = 5
+	}
+
+	s.mu.RLock()
+	idx := s.memoryIndexes[bucketID]
+	if idx != nil && idx.Len() > 0 {
+		raw, err := idx.Search(query, topK)
+		s.mu.RUnlock()
+		if err != nil {
+			return nil, err
+		}
+		out := make(map[string]float32, len(raw))
+		for _, r := range raw {
+			if r.Score > 0 {
+				out[r.ID] = r.Score
+			}
+		}
+		return out, nil
+	}
+	s.mu.RUnlock()
+
+	vectors, err := s.readMemoryVectors(ctx, bucketID)
+	if err != nil {
+		return nil, err
+	}
+	pairs := make([]pair, 0, len(vectors))
+	for memoryID, vector := range vectors {
+		score := CosineSimilarity(query, vector)
+		if score > 0 {
+			pairs = append(pairs, pair{embID: memoryID, score: score})
+		}
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		return pairs[i].score > pairs[j].score
+	})
+	if len(pairs) > topK {
+		pairs = pairs[:topK]
+	}
+	out := make(map[string]float32, len(pairs))
+	for _, p := range pairs {
+		out[p.embID] = p.score
+	}
+	return out, nil
+}
+
+func (s *BadgerStore) readMemoryVectors(ctx context.Context, bucketID string) (map[string][]float32, error) {
+	vectors := make(map[string][]float32)
+	prefix := []byte(fmt.Sprintf("%s%s:", memVecPrefix, bucketID))
+	err := s.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		var count int
+		for it.Rewind(); it.Valid(); it.Next() {
+			if count%100 == 0 {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+			}
+			count++
+			key := it.Item().Key()
+			memoryID := string(key[len(prefix):])
+			if err := it.Item().Value(func(val []byte) error {
+				vectors[memoryID] = bytesToVector(cloneBytes(val))
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return vectors, err
+}
+
+func indexMemoryFTSTxn(txn *badger.Txn, bucketID, memoryID, content string) error {
+	rawCounts := countRawTokens(content)
+	counts := make(map[string]int)
+	for token, count := range rawCounts {
+		for _, syn := range expandSynonyms(token) {
+			counts[syn] += count
+		}
+	}
+	for term, count := range counts {
+		if count > 255 {
+			count = 255
+		}
+		key := []byte(fmt.Sprintf("%s%s:%s:%s", memFTSPrefix, term, bucketID, memoryID))
+		if err := txn.Set(key, []byte{byte(count)}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func deleteMemoryFTSEntries(txn *badger.Txn, bucketID, memoryID string) error {
+	opts := badger.DefaultIteratorOptions
+	opts.Prefix = []byte(memFTSPrefix)
+	it := txn.NewIterator(opts)
+	defer it.Close()
+
+	suffix := ":" + bucketID + ":" + memoryID
+	var toDelete [][]byte
+	for it.Rewind(); it.Valid(); it.Next() {
+		key := it.Item().Key()
+		if strings.HasSuffix(string(key), suffix) {
+			toDelete = append(toDelete, cloneBytes(key))
+		}
+	}
+	for _, key := range toDelete {
+		if err := txn.Delete(key); err != nil && err != badger.ErrKeyNotFound {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *BadgerStore) searchMemoryFTS(ctx context.Context, bucketID, query string) (map[string]float64, error) {
+	tokens := TokenizeForQuery(query, FTSSearchOptions{Synonym: true})
+	if len(tokens) == 0 {
+		return nil, nil
+	}
+
+	termResults := make([]map[string]float64, 0, len(tokens))
+	for _, token := range tokens {
+		docScores, err := s.searchMemoryFTSTerm(ctx, bucketID, token)
+		if err != nil {
+			return nil, err
+		}
+		if len(docScores) > 0 {
+			termResults = append(termResults, docScores)
+		}
+	}
+	if len(termResults) == 0 {
+		return nil, nil
+	}
+
+	totalDocs, err := s.memoryDocumentCount(ctx, bucketID)
+	if err != nil {
+		return nil, err
+	}
+	if totalDocs == 0 {
+		totalDocs = 1
+	}
+
+	const k1 = 1.2
+	const b = 0.75
+	const avgDocLen = 10.0
+
+	scores := make(map[string]float64)
+	for _, docScores := range termResults {
+		df := len(docScores)
+		idf := 0.0
+		if df > 0 {
+			num := float64(totalDocs) - float64(df) + 0.5
+			denom := float64(df) + 0.5
+			idf = math.Log(num/denom + 1.0)
+		}
+		for memoryID, tf := range docScores {
+			docLen := avgDocLen
+			tfComponent := tf * (k1 + 1) / (tf + k1*(1-b+b*docLen/avgDocLen))
+			scores[memoryID] += idf * tfComponent
+		}
+	}
+
+	var maxScore float64
+	for _, score := range scores {
+		if score > maxScore {
+			maxScore = score
+		}
+	}
+	if maxScore > 0 {
+		for memoryID, score := range scores {
+			scores[memoryID] = score / maxScore
+		}
+	}
+	return scores, nil
+}
+
+func (s *BadgerStore) searchMemoryFTSTerm(ctx context.Context, bucketID, token string) (map[string]float64, error) {
+	isPrefix := strings.HasPrefix(token, "*:")
+	searchTerm := strings.TrimPrefix(token, "*:")
+	docScores := make(map[string]float64)
+
+	err := s.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		if isPrefix {
+			opts.Prefix = []byte(memFTSPrefix)
+		} else {
+			opts.Prefix = []byte(fmt.Sprintf("%s%s:%s:", memFTSPrefix, searchTerm, bucketID))
+		}
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		bucketMarker := ":" + bucketID + ":"
+		var count int
+		for it.Rewind(); it.Valid(); it.Next() {
+			if count%100 == 0 {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+			}
+			count++
+
+			keyStr := string(it.Item().Key())
+			var memoryID string
+			if isPrefix {
+				rest := keyStr[len(memFTSPrefix):]
+				idx := strings.Index(rest, bucketMarker)
+				if idx < 0 {
+					continue
+				}
+				term := rest[:idx]
+				if !strings.HasPrefix(term, searchTerm) {
+					continue
+				}
+				memoryID = rest[idx+len(bucketMarker):]
+			} else {
+				memoryID = keyStr[len(opts.Prefix):]
+			}
+
+			if err := it.Item().Value(func(val []byte) error {
+				if len(val) > 0 {
+					docScores[memoryID] += float64(val[0])
+				} else {
+					docScores[memoryID]++
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return docScores, err
+}
+
+func (s *BadgerStore) memoryDocumentCount(ctx context.Context, bucketID string) (int, error) {
+	prefix := []byte(fmt.Sprintf("%s%s:", memContPrefix, bucketID))
+	var count int
+	err := s.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Rewind(); it.Valid(); it.Next() {
+			if count%100 == 0 {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+			}
+			count++
+		}
+		return nil
+	})
+	return count, err
+}
+
+func (s *BadgerStore) memoryBucketID(memoryID string) (string, error) {
+	var bucketID string
+	err := s.View(func(txn *badger.Txn) error {
+		var err error
+		bucketID, err = extractBucketIDFromMemoryID(txn, memoryID)
+		return err
+	})
+	return bucketID, err
 }
 
 func extractBucketIDFromMemoryID(txn *badger.Txn, memoryID string) (string, error) {
@@ -474,6 +852,59 @@ func memoryExpired(record *types.MemoryRecord) bool {
 		return false
 	}
 	return record.ExpiresAt.Before(time.Now().UTC())
+}
+
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+type memoryWeights struct {
+	semantic   float64
+	lexical    float64
+	importance float64
+	recency    float64
+}
+
+func memorySearchWeights(req types.MemorySearchRequest) memoryWeights {
+	if req.SemanticWeight == 0 &&
+		req.LexicalWeight == 0 &&
+		req.ImportanceWeight == 0 &&
+		req.RecencyWeight == 0 {
+		return memoryWeights{
+			semantic:   0.60,
+			lexical:    0.25,
+			importance: 0.10,
+			recency:    0.05,
+		}
+	}
+	return memoryWeights{
+		semantic:   req.SemanticWeight,
+		lexical:    req.LexicalWeight,
+		importance: req.ImportanceWeight,
+		recency:    req.RecencyWeight,
+	}
+}
+
+func memoryRecencyScore(record *types.MemoryRecord, now time.Time) float64 {
+	t := record.UpdatedAt
+	if t.IsZero() {
+		t = record.CreatedAt
+	}
+	if t.IsZero() {
+		return 0
+	}
+	age := now.Sub(t)
+	if age < 0 {
+		age = 0
+	}
+	const halfLife = 7 * 24 * time.Hour
+	return 1 / (1 + age.Hours()/halfLife.Hours())
 }
 
 func cloneAnyMap(m map[string]any) map[string]any {

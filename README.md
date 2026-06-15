@@ -6,28 +6,30 @@ Go Embedded AI Memory + Knowledge Graph Database
 
 gracedb is a Go embedded AI memory and knowledge graph database built on Badger KV storage. It provides vector search, full-text search, knowledge management, session management, property graphs, RDF/SPARQL, and MCP services — all in a single, zero-external-dependency library.
 
-## CortexDB Feature Coverage
+## Maturity
 
-gracedb targets CortexDB feature parity. After step-by-step validation of 42 feature points (weighted calculation), **current coverage is ~92%**
+gracedb is an early-stage embedded AI database. The core storage, vector search,
+FTS, semantic memory, graph, RDF, and MCP surfaces are implemented and covered by
+Go tests, but several advanced AI workflows are still simplified or
+caller-extended. Treat the project as suitable for local applications,
+experiments, and controlled internal use before hardening it for production.
 
-### Fully Covered (34+ items, 100%)
+### Stable Core
 
-Embedder interface, text auto-vectorization, Quick API, vector CRUD, HNSW/IVF/Flat/LSH indexes, full-text search (BM25 + Chinese segmentation + synonyms + fuzzy matching), RRF hybrid fusion, metadata filtering, knowledge storage, Agent Memory, property graph, GraphRAG toolbox (9 tools), MCP service, backup/restore, OpenTelemetry, semantic routing, MemoryFlow workflow, GraphFlow workflow, scalar/product quantization, pluggable reranker, session management, document management, KnowledgeMemory (Recall/Reflect/Consolidate + graph expansion), auto-retention (AutoRetain), multi-index hybrid, Ontology API (RDFS/SHACL), GROUP BY aggregation.
+Embedder interface, text auto-vectorization, Quick API, vector CRUD,
+HNSW/IVF/Flat/LSH indexes, full-text search, metadata filtering, semantic Agent
+Memory, knowledge storage, session/document management, backup/restore, and
+OpenTelemetry hooks.
 
-### Additional Features (not in CortexDB)
+### Experimental Or Simplified
 
-RDF triple store, SPARQL SELECT/ASK, N-Triples import/export, RDFS inference, SHACL validation, Hindsight recall strategy.
-
-### Partially Implemented (2 items)
-
-| Feature | Completion | Missing |
-|---------|-----------|---------|
-| LLM-driven entity extraction | 30% | Heuristic-only; caller implements LLM extractor |
-| LLM Reflect | 60% | Rule-based built-in; caller injects LLM reflector |
-
-### Not Implemented (0 items remaining)
-
-All core features implemented. Remaining gaps require caller-side LLM integration.
+| Area | Current state |
+|------|---------------|
+| LLM-driven entity extraction | Built-in extraction is heuristic; callers can inject LLM extractors. |
+| LLM Reflect | Built-in reflection is rule-based; callers can inject LLM reflectors. |
+| SPARQL | Supports a simplified SELECT/ASK subset. |
+| GraphRAG workflows | Useful pipeline primitives, not a full managed RAG product. |
+| Index recovery | Stored vectors are durable and searchable after reopen; production deployments should still add crash/recovery validation for their workload. |
 
 ## Documentation
 
@@ -45,7 +47,7 @@ All core features implemented. Remaining gaps require caller-side LLM integratio
 - **Vector Search** — HNSW / IVF / Flat / LSH indexes with cosine similarity
 - **Full-Text Search** — Chinese segmentation + stop words + Levenshtein fuzzy + RRF hybrid fusion
 - **Knowledge Storage** — auto-chunking + FTS indexing + document-level aggregation
-- **Agent Memory** — scope/namespace/TTL isolation with vector + FTS dual-path retrieval
+- **Agent Memory** — scope/namespace/TTL isolation with semantic + lexical hybrid retrieval
 - **Property Graph** — node/edge CRUD, BFS/DFS/shortest path traversal
 - **RDF/SPARQL** — N-Triples import/export, SPARQL SELECT/ASK, RDFS inference, SHACL validation
 - **GraphRAG Toolbox** — 9 built-in tools for LLM orchestration
@@ -355,12 +357,16 @@ db.RebuildIndex("docs")
 | `emb:<cid>:<eid>` | Embedding metadata |
 | `emb:vec:<cid>:<eid>` | Vector data |
 | `fts:<token>:<cid>:<eid>` | FTS inverted index (value = TF count) |
+| `mem:<bucket>:<id>` | Memory metadata |
+| `mem:content:<bucket>:<id>` | Memory content |
+| `mem:vec:<bucket>:<id>` | Memory semantic vector |
+| `mem:fts:<token>:<bucket>:<id>` | Memory lexical inverted index |
+| `mem:idx:<id>` | Memory ID to bucket index |
 | `graph:node:<id>` | Graph node |
 | `graph:edge:<id>` | Graph edge |
 | `rdf:t:<id>` | RDF triple |
 | `idx:snapshot:<cid>` | Vector index snapshot |
 | `sess:<id>` | Session |
-| `mem:bucket:<bucket>:<id>` | Memory |
 
 ## Examples
 

@@ -147,6 +147,10 @@ for _, hit := range resp.Results {
 
 ### 7. Agent Memory
 
+With `WithEmbedder`, memories automatically store semantic vectors. Search
+combines semantic retrieval, the `mem:fts` lexical index, importance, and
+recency. Without an embedder, memory search runs in lexical mode.
+
 ```go
 // Save memory
 record, _ := db.SaveMemory(types.MemorySaveRequest{
@@ -155,6 +159,7 @@ record, _ := db.SaveMemory(types.MemorySaveRequest{
     Scope:      "user",         // global / user / session
     UserID:     "user-123",
     Namespace:  "preferences",  // optional namespace isolation
+    Importance: 0.8,            // 0..1, used for ranking
     TTLSeconds: 3600,           // optional TTL
 })
 
@@ -165,6 +170,10 @@ resp, _ := db.SearchMemory(types.MemorySearchRequest{
     Scope:   "user",
     TopK:    5,
 })
+for _, hit := range resp.Results {
+    fmt.Printf("%s final=%.3f semantic=%.3f lexical=%.3f\n",
+        hit.Memory.Content, hit.FinalScore, hit.SemanticScore, hit.LexicalScore)
+}
 ```
 
 ### 8. Property Graph

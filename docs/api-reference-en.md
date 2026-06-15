@@ -215,9 +215,28 @@ Searches knowledge items, aggregating chunk results by document.
 
 ## Memory Management
 
+Memory management provides Agent memory with scope/namespace/TTL isolation. When
+`WithEmbedder` is configured, `SaveMemory` automatically stores a semantic
+vector, and `SearchMemory` combines semantic vector retrieval with lexical
+inverted-index retrieval. Without an embedder, memory search still works in
+lexical mode.
+
+Scope resolution:
+
+| Scope | Required fields | Bucket |
+|-------|-----------------|--------|
+| `global` | none | `memory:global:<namespace>` |
+| `user` | `UserID` | `memory:user:<userID>:<namespace>` |
+| `session` | `SessionID` | `memory:session:<sessionID>:<namespace>` |
+
+Empty `Namespace` resolves to `default`. Search is limited to the resolved bucket
+and does not cross user/session/namespace boundaries.
+
 ### `(*DB).SaveMemory(req types.MemorySaveRequest) (*types.MemoryRecord, error)`
 
-Stores memory with scope/namespace bucketing.
+Stores memory with scope/namespace bucketing, importance, and TTL. With an
+embedder, `Embed(content)` is persisted under `mem:vec:<bucketID>:<memoryID>`.
+The lexical index is stored under `mem:fts:<term>:<bucketID>:<memoryID>`.
 
 ### `(*DB).GetMemory(memoryID string) (*types.MemoryRecord, error)`
 
@@ -225,15 +244,37 @@ Gets a memory record.
 
 ### `(*DB).UpdateMemory(req types.MemoryUpdateRequest) (*types.MemoryRecord, error)`
 
-Updates a memory record.
+Updates a memory record. Content changes rebuild the semantic vector and lexical
+index and remove old index entries.
 
 ### `(*DB).DeleteMemory(memoryID string) error`
 
-Deletes a memory record.
+Deletes a memory record and its metadata, content, semantic vector, lexical
+index, and memoryID bucket index.
 
 ### `(*DB).SearchMemory(req types.MemorySearchRequest) (*types.MemorySearchResponse, error)`
 
-Searches memories in a resolved bucket.
+Searches memories in the resolved bucket. Default score fusion:
+
+```text
+final = semantic*0.60 + lexical*0.25 + importance*0.10 + recency*0.05
+```
+
+Each `MemorySearchHit` includes `Score`/`FinalScore` and explanation fields:
+`SemanticScore`, `LexicalScore`, `ImportanceScore`, and `RecencyScore`. Expired
+memories are filtered before results are returned.
+
+Optional `MemorySearchRequest` ranking weights:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `SemanticWeight` | `0.60` | Semantic vector score weight |
+| `LexicalWeight` | `0.25` | Lexical retrieval score weight |
+| `ImportanceWeight` | `0.10` | Memory importance weight |
+| `RecencyWeight` | `0.05` | Updated-at freshness weight |
+
+When all four weights are `0`, gracedb uses defaults. If any weight is set, the
+caller-provided weight combination is used as-is.
 
 ---
 
@@ -712,7 +753,13 @@ Embedding + `Score float32`.
 
 ### `types.MemoryRecord`
 
-Memory record with scope/namespace/TTL support.
+Memory record with scope/namespace/TTL support, semantic vector, importance, and
+updated_at.
+
+### `types.MemorySearchHit`
+
+Memory search result with `Score`/`FinalScore` and ranking explanation fields:
+`SemanticScore`, `LexicalScore`, `ImportanceScore`, and `RecencyScore`.
 
 ### `types.KnowledgeRecord`
 
@@ -775,5 +822,9 @@ RDF term and triple.
 | `msg:<sessionID>:<msgID>` | Message |
 | `doc:<id>` | Document |
 | `know:<collection>:<id>` | Knowledge item |
-| `mem:bucket:<bucketID>:<id>` | Memory |
+| `mem:<bucketID>:<id>` | Memory metadata |
+| `mem:content:<bucketID>:<id>` | Memory content |
+| `mem:vec:<bucketID>:<id>` | Memory semantic vector |
+| `mem:fts:<token>:<bucketID>:<id>` | Memory lexical inverted index |
+| `mem:idx:<id>` | Memory ID to bucketID index |
 | `geo:<collectionID>:<docID>` | Geographic coordinate |

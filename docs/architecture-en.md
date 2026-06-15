@@ -135,6 +135,42 @@ km.Consolidate(query)
     └──► Optionally promote to durable knowledge
 ```
 
+### Memory Management Flow
+
+```
+db.SaveMemory(req)
+    │
+    ├──► db.embedder.Embed(content)      # when an Embedder is configured
+    │
+    ├──► resolveMemoryBucket(scope, userID, sessionID, namespace)
+    │       ├── global   → memory:global:{namespace}
+    │       ├── user     → memory:user:{userID}:{namespace}
+    │       └── session  → memory:session:{sessionID}:{namespace}
+    │
+    └──► store.SaveMemory(...)
+            ├── mem:<bucketID>:<id>             # metadata
+            ├── mem:content:<bucketID>:<id>     # content
+            ├── mem:vec:<bucketID>:<id>         # semantic vector
+            ├── mem:fts:<term>:<bucketID>:<id>  # lexical inverted index
+            ├── mem:idx:<id>                    # id → bucketID
+            └── memoryIndexes[bucketID]         # in-memory vector index
+```
+
+### Memory Search Flow
+
+```
+db.SearchMemory(req)
+    │
+    ├──► db.embedder.Embed(query)        # when an Embedder is configured
+    │
+    └──► store.SearchMemory(...)
+            ├── vector search inside the resolved bucket
+            ├── mem:fts lexical search inside the resolved bucket
+            ├── semantic/lexical/importance/recency score fusion
+            │   └── final = semantic*0.60 + lexical*0.25 + importance*0.10 + recency*0.05
+            └── expired-memory filtering before TopK
+```
+
 ## Vector Index System
 
 ### Four Index Types

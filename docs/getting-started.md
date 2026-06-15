@@ -147,6 +147,9 @@ for _, hit := range resp.Results {
 
 ### 7. 记忆管理
 
+配置 `WithEmbedder` 后，记忆会自动保存语义向量；搜索时会融合语义检索、
+`mem:fts` 词法索引、importance 和 recency。未配置 Embedder 时，搜索会走词法模式。
+
 ```go
 // 保存记忆
 record, _ := db.SaveMemory(types.MemorySaveRequest{
@@ -155,6 +158,7 @@ record, _ := db.SaveMemory(types.MemorySaveRequest{
     Scope:      "user",        // global / user / session
     UserID:     "user-123",
     Namespace:  "preferences", // 可选的命名空间隔离
+    Importance: 0.8,           // 0..1，参与排序
     TTLSeconds: 3600,          // 可选 TTL
 })
 
@@ -165,6 +169,10 @@ resp, _ := db.SearchMemory(types.MemorySearchRequest{
     Scope:   "user",
     TopK:    5,
 })
+for _, hit := range resp.Results {
+    fmt.Printf("%s final=%.3f semantic=%.3f lexical=%.3f\n",
+        hit.Memory.Content, hit.FinalScore, hit.SemanticScore, hit.LexicalScore)
+}
 ```
 
 ### 8. 属性图

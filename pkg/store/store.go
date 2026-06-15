@@ -14,12 +14,14 @@ import (
 
 // BadgerStore is the Badger-backed storage layer for gracedb.
 type BadgerStore struct {
-	db       *badger.DB
-	config   *types.Config
-	mu       sync.RWMutex
-	indexes  map[string]index.Index // collectionID → in-memory vector index
-	idxType  string                 // "hnsw" / "ivf" / "flat" / "lsh"
-	idxTypes []string               // multi-index types
+	db      *badger.DB
+	config  *types.Config
+	mu      sync.RWMutex
+	indexes map[string]index.Index // collectionID → in-memory vector index
+	// bucketID -> in-memory semantic memory index
+	memoryIndexes map[string]index.Index
+	idxType       string   // "hnsw" / "ivf" / "flat" / "lsh"
+	idxTypes      []string // multi-index types
 
 	// Graceful shutdown
 	closeMu sync.RWMutex
@@ -51,11 +53,12 @@ func New(cfg *types.Config) (*BadgerStore, error) {
 	}
 
 	return &BadgerStore{
-		db:       db,
-		config:   cfg,
-		indexes:  make(map[string]index.Index),
-		idxType:  idxType,
-		idxTypes: cfg.IndexTypes,
+		db:            db,
+		config:        cfg,
+		indexes:       make(map[string]index.Index),
+		memoryIndexes: make(map[string]index.Index),
+		idxType:       idxType,
+		idxTypes:      cfg.IndexTypes,
 	}, nil
 }
 
@@ -242,17 +245,16 @@ func isMetadataExpired(metadata map[string]any) bool {
 	return t.Before(time.Now().UTC())
 }
 
-// DeleteMemoryDirect deletes a memory by ID without the s.mu write lock.
-// Used by the cleanup goroutine to avoid deadlock with the cleanup mutex.
+// DeleteMemoryDirect deletes a memory by ID for the cleanup goroutine.
 func (s *BadgerStore) DeleteMemoryDirect(memoryID string) error {
-	return s.Update(func(txn *badger.Txn) error {
+	var bucketID string
+	err := s.Update(func(txn *badger.Txn) error {
 		// Look up bucket ID via index.
 		idxKey := []byte("mem:idx:" + memoryID)
 		idxItem, err := txn.Get(idxKey)
 		if err != nil {
 			return err
 		}
-		var bucketID string
 		idxItem.Value(func(val []byte) error {
 			bucketID = string(cloneBytes(val))
 			return nil
@@ -261,6 +263,7 @@ func (s *BadgerStore) DeleteMemoryDirect(memoryID string) error {
 		keys := [][]byte{
 			[]byte("mem:" + bucketID + ":" + memoryID),
 			[]byte("mem:content:" + bucketID + ":" + memoryID),
+			[]byte("mem:vec:" + bucketID + ":" + memoryID),
 			idxKey,
 		}
 		for _, k := range keys {
@@ -268,8 +271,20 @@ func (s *BadgerStore) DeleteMemoryDirect(memoryID string) error {
 				return err
 			}
 		}
+		if err := deleteMemoryFTSEntries(txn, bucketID, memoryID); err != nil {
+			return err
+		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if idx, ok := s.memoryIndexes[bucketID]; ok {
+		idx.RemoveVector(memoryID)
+	}
+	s.mu.Unlock()
+	return nil
 }
 
 func marshal(v interface{}) ([]byte, error) {

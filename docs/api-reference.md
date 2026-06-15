@@ -216,11 +216,25 @@ db, err := gracedb.Open("/tmp/data",
 
 ## 记忆管理
 
-记忆管理提供 scope/namespace/TTL 隔离的 Agent 记忆。
+记忆管理提供 scope/namespace/TTL 隔离的 Agent 记忆。配置 `WithEmbedder` 后，
+`SaveMemory` 会自动写入语义向量，`SearchMemory` 会执行语义向量检索 + 词法
+倒排索引检索，并按 hybrid score 返回结果；未配置 Embedder 时仍可使用词法检索。
+
+Scope 解析规则：
+
+| Scope | 必填字段 | Bucket |
+|-------|----------|--------|
+| `global` | 无 | `memory:global:<namespace>` |
+| `user` | `UserID` | `memory:user:<userID>:<namespace>` |
+| `session` | `SessionID` | `memory:session:<sessionID>:<namespace>` |
+
+`Namespace` 为空时使用 `default`。搜索只在解析后的 bucket 内执行，不会跨 user/session/namespace 串结果。
 
 ### `(*DB).SaveMemory(req types.MemorySaveRequest) (*types.MemoryRecord, error)`
 
-存储记忆，支持 scope（global/user/session）和 namespace 隔离。
+存储记忆，支持 scope（global/user/session）、namespace、importance 和 TTL。
+有 Embedder 时会调用 `Embed(content)` 并持久化到 `mem:vec:<bucketID>:<memoryID>`，
+同时写入 `mem:fts:<term>:<bucketID>:<memoryID>` 词法索引。
 
 ### `(*DB).GetMemory(memoryID string) (*types.MemoryRecord, error)`
 
@@ -228,15 +242,34 @@ db, err := gracedb.Open("/tmp/data",
 
 ### `(*DB).UpdateMemory(req types.MemoryUpdateRequest) (*types.MemoryRecord, error)`
 
-更新记忆。
+更新记忆。内容变更时会重建语义向量和 `mem:fts` 词法索引，并删除旧索引项。
 
 ### `(*DB).DeleteMemory(memoryID string) error`
 
-删除记忆。
+删除记忆，同时删除元数据、内容、语义向量、词法索引和 memoryID bucket 索引。
 
 ### `(*DB).SearchMemory(req types.MemorySearchRequest) (*types.MemorySearchResponse, error)`
 
-搜索记忆，支持向量或 FTS 双路检索。
+搜索记忆。默认融合：
+
+```text
+final = semantic*0.60 + lexical*0.25 + importance*0.10 + recency*0.05
+```
+
+返回的每条 `MemorySearchHit` 包含 `Score`/`FinalScore`，以及
+`SemanticScore`、`LexicalScore`、`ImportanceScore`、`RecencyScore` 解释字段。
+过期记忆会在返回前过滤。
+
+`MemorySearchRequest` 可选权重字段：
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `SemanticWeight` | `0.60` | 语义向量分权重 |
+| `LexicalWeight` | `0.25` | 词法检索分权重 |
+| `ImportanceWeight` | `0.10` | 记忆重要性权重 |
+| `RecencyWeight` | `0.05` | 更新时间新鲜度权重 |
+
+四个权重全为 `0` 时使用默认值；只要设置任意权重，就完全使用调用方提供的组合。
 
 ---
 
@@ -718,7 +751,12 @@ svc := memoryflow.New(db, planner, extractor,
 
 ### `types.MemoryRecord`
 
-记忆记录，支持 scope/namespace/TTL。
+记忆记录，支持 scope/namespace/TTL、语义向量、importance 和 updated_at。
+
+### `types.MemorySearchHit`
+
+记忆检索结果，包含 `Score`/`FinalScore` 以及 `SemanticScore`、
+`LexicalScore`、`ImportanceScore`、`RecencyScore` 排序解释字段。
 
 ### `types.KnowledgeRecord`
 
@@ -779,5 +817,9 @@ RDF 术语和三元组。
 | `msg:<sessionID>:<msgID>` | 消息 |
 | `doc:<id>` | 文档 |
 | `know:<collection>:<id>` | 知识项 |
-| `mem:bucket:<bucketID>:<id>` | 记忆 |
+| `mem:<bucketID>:<id>` | 记忆元数据 |
+| `mem:content:<bucketID>:<id>` | 记忆内容 |
+| `mem:vec:<bucketID>:<id>` | 记忆语义向量 |
+| `mem:fts:<token>:<bucketID>:<id>` | 记忆词法倒排索引 |
+| `mem:idx:<id>` | 记忆 ID 到 bucketID 的索引 |
 | `geo:<collectionID>:<docID>` | 地理坐标 |

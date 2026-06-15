@@ -2,8 +2,10 @@ package store
 
 import (
 	"os"
+	"strings"
 	"testing"
 
+	"github.com/dgraph-io/badger/v4"
 	"github.com/dshmyz/gracedb/pkg/types"
 )
 
@@ -174,10 +176,10 @@ func TestMemorySearch(t *testing.T) {
 	})
 
 	resp, err := s.SearchMemory(types.MemorySearchRequest{
-		Query:   "Python",
-		Scope:   types.MemoryScopeUser,
-		UserID:  "user-1",
-		TopK:    5,
+		Query:  "Python",
+		Scope:  types.MemoryScopeUser,
+		UserID: "user-1",
+		TopK:   5,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -186,6 +188,197 @@ func TestMemorySearch(t *testing.T) {
 	if len(resp.Results) == 0 {
 		t.Logf("no results for memory search (token matching)")
 	}
+	if len(resp.Results) > 0 {
+		if resp.Results[0].LexicalScore <= 0 {
+			t.Fatalf("expected lexical score explanation, got %+v", resp.Results[0])
+		}
+		if resp.Results[0].Score != resp.Results[0].FinalScore {
+			t.Fatalf("expected score to match final score, got %+v", resp.Results[0])
+		}
+	}
+}
+
+func TestMemorySearchCustomWeights(t *testing.T) {
+	s := newIntegrationStore(t)
+
+	_, err := s.SaveMemory(types.MemorySaveRequest{
+		MemoryID:  "mem-semantic",
+		Content:   "Ordinary unrelated text.",
+		Vector:    []float32{1, 0},
+		Scope:     types.MemoryScopeUser,
+		UserID:    "user-1",
+		Namespace: "prefs",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.SaveMemory(types.MemorySaveRequest{
+		MemoryID:   "mem-important",
+		Content:    "Shared retrieval phrase.",
+		Vector:     []float32{0, 1},
+		Scope:      types.MemoryScopeUser,
+		UserID:     "user-1",
+		Namespace:  "prefs",
+		Importance: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := s.SearchMemory(types.MemorySearchRequest{
+		Query:       "shared",
+		QueryVector: []float32{1, 0},
+		Scope:       types.MemoryScopeUser,
+		UserID:      "user-1",
+		Namespace:   "prefs",
+		TopK:        2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Results) != 2 || resp.Results[0].Memory.ID != "mem-semantic" {
+		t.Fatalf("expected default weights to prefer semantic match, got %+v", resp.Results)
+	}
+
+	resp, err = s.SearchMemory(types.MemorySearchRequest{
+		Query:            "shared",
+		QueryVector:      []float32{1, 0},
+		Scope:            types.MemoryScopeUser,
+		UserID:           "user-1",
+		Namespace:        "prefs",
+		TopK:             2,
+		SemanticWeight:   0,
+		LexicalWeight:    1,
+		ImportanceWeight: 1,
+		RecencyWeight:    0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Results) != 2 || resp.Results[0].Memory.ID != "mem-important" {
+		t.Fatalf("expected custom weights to prefer lexical important match, got %+v", resp.Results)
+	}
+}
+
+func TestMemoryFTSIndexLifecycle(t *testing.T) {
+	s := newIntegrationStore(t)
+
+	_, err := s.SaveMemory(types.MemorySaveRequest{
+		MemoryID:  "mem-fts",
+		Content:   "User likes purple aardvark.",
+		Scope:     types.MemoryScopeUser,
+		UserID:    "user-1",
+		Namespace: "prefs",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if countMemoryFTSKeys(t, s, "aardvark", "memory:user:user-1:prefs", "mem-fts") == 0 {
+		t.Fatal("expected memory FTS key for saved content")
+	}
+
+	updated := "User prefers green tea."
+	if _, err := s.UpdateMemory(types.MemoryUpdateRequest{
+		MemoryID: "mem-fts",
+		Content:  &updated,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if countMemoryFTSKeys(t, s, "aardvark", "memory:user:user-1:prefs", "mem-fts") != 0 {
+		t.Fatal("expected old memory FTS key to be removed after update")
+	}
+	if countMemoryFTSKeys(t, s, "green", "memory:user:user-1:prefs", "mem-fts") == 0 {
+		t.Fatal("expected new memory FTS key after update")
+	}
+
+	if err := s.DeleteMemory("mem-fts"); err != nil {
+		t.Fatal(err)
+	}
+	if countMemoryFTSKeys(t, s, "green", "memory:user:user-1:prefs", "mem-fts") != 0 {
+		t.Fatal("expected memory FTS key to be removed after delete")
+	}
+}
+
+func TestMemoryFTSIndexLifecycleSurvivesReopen(t *testing.T) {
+	dir, err := os.MkdirTemp("", "gracedb-memory-fts-reopen-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	cfg := types.DefaultConfig()
+	cfg.Path = dir
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.SaveMemory(types.MemorySaveRequest{
+		MemoryID:  "mem-fts",
+		Content:   "User likes purple aardvark.",
+		Scope:     types.MemoryScopeUser,
+		UserID:    "user-1",
+		Namespace: "prefs",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := "User prefers green tea."
+	if _, err := s.UpdateMemory(types.MemoryUpdateRequest{
+		MemoryID: "mem-fts",
+		Content:  &updated,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err = New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if countMemoryFTSKeys(t, s, "aardvark", "memory:user:user-1:prefs", "mem-fts") != 0 {
+		t.Fatal("expected old memory FTS key to stay absent after reopen")
+	}
+	if countMemoryFTSKeys(t, s, "green", "memory:user:user-1:prefs", "mem-fts") == 0 {
+		t.Fatal("expected updated memory FTS key after reopen")
+	}
+	if err := s.DeleteMemory("mem-fts"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err = New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if countMemoryFTSKeys(t, s, "green", "memory:user:user-1:prefs", "mem-fts") != 0 {
+		t.Fatal("expected deleted memory FTS key to stay absent after reopen")
+	}
+}
+
+func countMemoryFTSKeys(t *testing.T, s *BadgerStore, term, bucketID, memoryID string) int {
+	t.Helper()
+	var count int
+	prefix := []byte("mem:fts:" + term + ":" + bucketID + ":")
+	if err := s.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Rewind(); it.Valid(); it.Next() {
+			if strings.HasSuffix(string(it.Item().Key()), ":"+memoryID) {
+				count++
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return count
 }
 
 func TestMemoryDelete(t *testing.T) {
