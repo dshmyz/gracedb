@@ -268,8 +268,9 @@ final = semantic*0.60 + lexical*0.25 + importance*0.10 + recency*0.05
 | `LexicalWeight` | `0.25` | 词法检索分权重 |
 | `ImportanceWeight` | `0.10` | 记忆重要性权重 |
 | `RecencyWeight` | `0.05` | 更新时间新鲜度权重 |
+| `RecencyHalfLife` | `7 天` | recency 分数半衰期，越短越偏向新记忆 |
 
-四个权重全为 `0` 时使用默认值；只要设置任意权重，就完全使用调用方提供的组合。
+四个权重全为 `0` 时使用默认值；只要设置任意权重，就完全使用调用方提供的组合。`RecencyHalfLife` 为 `0` 时使用默认 7 天。
 
 ---
 

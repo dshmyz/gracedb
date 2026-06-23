@@ -6,6 +6,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/dshmyz/gracedb/pkg/gracedb"
 	"github.com/dshmyz/gracedb/pkg/graph"
@@ -25,6 +27,7 @@ func main() {
 	db, err := gracedb.Open(dbPath,
 		gracedb.WithIndexType("hnsw"),
 		gracedb.WithSimilarity("cosine"),
+		gracedb.WithEmbedder(demoEmbedder{}),
 	)
 	if err != nil {
 		log.Fatal(err)
@@ -107,17 +110,8 @@ func main() {
 		fmt.Println("7. Saved knowledge item")
 	}
 
-	// 9. Memory storage.
-	mem, err := db.SaveMemory(types.MemorySaveRequest{
-		MemoryID: "mem-1",
-		Content:  "User prefers Go over Python",
-		Scope:    "user",
-	})
-	if err != nil {
-		log.Printf("SaveMemory: %v", err)
-	} else {
-		fmt.Printf("8. Saved memory: %s\n", mem.ID)
-	}
+	// 9. Semantic Agent Memory.
+	runMemoryDemo(db)
 
 	// 10. Property graph.
 	g := db.Graph()
@@ -143,4 +137,146 @@ func main() {
 		stats.CollectionCount, stats.EmbeddingCount, stats.SessionCount)
 
 	fmt.Println("\nDemo completed successfully!")
+}
+
+func runMemoryDemo(db *gracedb.DB) {
+	userID := "user-123"
+	save := func(req types.MemorySaveRequest) {
+		if _, err := db.SaveMemory(req); err != nil {
+			log.Fatalf("SaveMemory(%s): %v", req.MemoryID, err)
+		}
+	}
+
+	save(types.MemorySaveRequest{
+		MemoryID:   "mem-go",
+		Content:    "User prefers Go for backend services.",
+		Scope:      types.MemoryScopeUser,
+		UserID:     userID,
+		Namespace:  "preferences",
+		Importance: 0.8,
+	})
+	save(types.MemorySaveRequest{
+		MemoryID:   "mem-tea",
+		Content:    "User likes green tea in the afternoon.",
+		Scope:      types.MemoryScopeUser,
+		UserID:     userID,
+		Namespace:  "preferences",
+		Importance: 0.3,
+	})
+	save(types.MemorySaveRequest{
+		MemoryID:   "mem-other-user",
+		Content:    "Other user prefers Python notebooks.",
+		Scope:      types.MemoryScopeUser,
+		UserID:     "other-user",
+		Namespace:  "preferences",
+		Importance: 1.0,
+	})
+
+	fmt.Println("8. Semantic memory: saved scoped user memories")
+	printMemorySearch(db, "semantic query", types.MemorySearchRequest{
+		Query:     "backend language preference",
+		Scope:     types.MemoryScopeUser,
+		UserID:    userID,
+		Namespace: "preferences",
+		TopK:      3,
+	})
+	printMemorySearch(db, "custom lexical+importance weights", types.MemorySearchRequest{
+		Query:            "green tea",
+		Scope:            types.MemoryScopeUser,
+		UserID:           userID,
+		Namespace:        "preferences",
+		TopK:             3,
+		SemanticWeight:   0,
+		LexicalWeight:    0.80,
+		ImportanceWeight: 0.20,
+		RecencyWeight:    0,
+	})
+	printMemorySearch(db, "short recency half-life", types.MemorySearchRequest{
+		Query:           "preference",
+		Scope:           types.MemoryScopeUser,
+		UserID:          userID,
+		Namespace:       "preferences",
+		TopK:            3,
+		LexicalWeight:   0.50,
+		RecencyWeight:   0.50,
+		RecencyHalfLife: time.Second,
+	})
+
+	updated := "User now prefers Rust for backend services."
+	if _, err := db.UpdateMemory(types.MemoryUpdateRequest{
+		MemoryID: "mem-go",
+		Content:  &updated,
+	}); err != nil {
+		log.Fatalf("UpdateMemory: %v", err)
+	}
+	printMemorySearch(db, "after update", types.MemorySearchRequest{
+		Query:     "rust backend",
+		Scope:     types.MemoryScopeUser,
+		UserID:    userID,
+		Namespace: "preferences",
+		TopK:      2,
+	})
+
+	if err := db.DeleteMemory("mem-tea"); err != nil {
+		log.Fatalf("DeleteMemory: %v", err)
+	}
+	if _, err := db.GetMemory("mem-tea"); err != nil {
+		fmt.Printf("   Deleted mem-tea; GetMemory now returns: %v\n", err)
+	}
+}
+
+func printMemorySearch(db *gracedb.DB, label string, req types.MemorySearchRequest) {
+	resp, err := db.SearchMemory(req)
+	if err != nil {
+		log.Fatalf("SearchMemory(%s): %v", label, err)
+	}
+	fmt.Printf("   Memory search [%s]: %d results\n", label, len(resp.Results))
+	for i, hit := range resp.Results {
+		fmt.Printf("      %d. id=%s final=%.3f sem=%.3f lex=%.3f imp=%.3f rec=%.3f content=%q\n",
+			i+1,
+			hit.Memory.ID,
+			hit.FinalScore,
+			hit.SemanticScore,
+			hit.LexicalScore,
+			hit.ImportanceScore,
+			hit.RecencyScore,
+			hit.Memory.Content,
+		)
+	}
+}
+
+type demoEmbedder struct{}
+
+func (demoEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
+	lower := strings.ToLower(text)
+	vec := []float32{0.01, 0.01, 0.01, 0.01}
+	if strings.Contains(lower, "go") || strings.Contains(lower, "backend") || strings.Contains(lower, "language") {
+		vec[0] = 1
+	}
+	if strings.Contains(lower, "tea") || strings.Contains(lower, "afternoon") {
+		vec[1] = 1
+	}
+	if strings.Contains(lower, "python") || strings.Contains(lower, "notebook") {
+		vec[2] = 1
+	}
+	if strings.Contains(lower, "rust") {
+		vec[3] = 1
+	}
+	return vec, nil
+}
+
+func (e demoEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, text := range texts {
+		vec, err := e.Embed(ctx, text)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = vec
+	}
+	return out, nil
+}
+
+func (demoEmbedder) Dimension() int {
+	return 4
 }

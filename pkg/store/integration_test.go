@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dgraph-io/badger/v4"
 	"github.com/dshmyz/gracedb/pkg/types"
@@ -257,6 +258,55 @@ func TestMemorySearchCustomWeights(t *testing.T) {
 	}
 	if len(resp.Results) != 2 || resp.Results[0].Memory.ID != "mem-important" {
 		t.Fatalf("expected custom weights to prefer lexical important match, got %+v", resp.Results)
+	}
+}
+
+func TestMemorySearchCustomRecencyHalfLife(t *testing.T) {
+	s := newIntegrationStore(t)
+
+	_, err := s.SaveMemory(types.MemorySaveRequest{
+		MemoryID:  "mem-old",
+		Content:   "Shared retrieval phrase.",
+		Scope:     types.MemoryScopeUser,
+		UserID:    "user-1",
+		Namespace: "prefs",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	_, err = s.SaveMemory(types.MemorySaveRequest{
+		MemoryID:  "mem-new",
+		Content:   "Shared retrieval phrase.",
+		Scope:     types.MemoryScopeUser,
+		UserID:    "user-1",
+		Namespace: "prefs",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := s.SearchMemory(types.MemorySearchRequest{
+		Query:           "shared retrieval phrase",
+		Scope:           types.MemoryScopeUser,
+		UserID:          "user-1",
+		Namespace:       "prefs",
+		TopK:            2,
+		LexicalWeight:   0,
+		RecencyWeight:   1,
+		RecencyHalfLife: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Results) != 2 {
+		t.Fatalf("expected two results, got %+v", resp.Results)
+	}
+	if resp.Results[0].Memory.ID != "mem-new" {
+		t.Fatalf("expected custom recency half-life to rank newest first, got %+v", resp.Results)
+	}
+	if resp.Results[1].RecencyScore >= 0.5 {
+		t.Fatalf("expected old memory recency to decay with short half-life, got %+v", resp.Results)
 	}
 }
 

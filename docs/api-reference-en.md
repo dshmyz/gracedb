@@ -272,9 +272,11 @@ Optional `MemorySearchRequest` ranking weights:
 | `LexicalWeight` | `0.25` | Lexical retrieval score weight |
 | `ImportanceWeight` | `0.10` | Memory importance weight |
 | `RecencyWeight` | `0.05` | Updated-at freshness weight |
+| `RecencyHalfLife` | `7 days` | Recency score half-life; shorter values favor newer memories more strongly |
 
 When all four weights are `0`, gracedb uses defaults. If any weight is set, the
-caller-provided weight combination is used as-is.
+caller-provided weight combination is used as-is. `RecencyHalfLife=0` uses the
+default 7-day half-life.
 
 ---
 

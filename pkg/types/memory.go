@@ -69,6 +69,9 @@ type MemorySearchRequest struct {
 	LexicalWeight    float64
 	ImportanceWeight float64
 	RecencyWeight    float64
+	// RecencyHalfLife controls how quickly recency score decays. Zero uses the
+	// store default.
+	RecencyHalfLife time.Duration
 	// Context carries a deadline/cancellation for memory search. If nil,
 	// context.Background() is used.
 	Context context.Context

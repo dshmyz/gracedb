@@ -378,7 +378,7 @@ func (s *BadgerStore) SearchMemory(req types.MemorySearchRequest) (*types.Memory
 			continue
 		}
 		score.importanceScore = clamp01(rec.Importance)
-		score.recencyScore = memoryRecencyScore(rec, now)
+		score.recencyScore = memoryRecencyScore(rec, now, memoryRecencyHalfLife(req))
 		score.finalScore = score.semanticScore*weights.semantic +
 			score.lexicalScore*weights.lexical +
 			score.importanceScore*weights.importance +
@@ -891,7 +891,14 @@ func memorySearchWeights(req types.MemorySearchRequest) memoryWeights {
 	}
 }
 
-func memoryRecencyScore(record *types.MemoryRecord, now time.Time) float64 {
+func memoryRecencyHalfLife(req types.MemorySearchRequest) time.Duration {
+	if req.RecencyHalfLife > 0 {
+		return req.RecencyHalfLife
+	}
+	return 7 * 24 * time.Hour
+}
+
+func memoryRecencyScore(record *types.MemoryRecord, now time.Time, halfLife time.Duration) float64 {
 	t := record.UpdatedAt
 	if t.IsZero() {
 		t = record.CreatedAt
@@ -903,7 +910,9 @@ func memoryRecencyScore(record *types.MemoryRecord, now time.Time) float64 {
 	if age < 0 {
 		age = 0
 	}
-	const halfLife = 7 * 24 * time.Hour
+	if halfLife <= 0 {
+		halfLife = 7 * 24 * time.Hour
+	}
 	return 1 / (1 + age.Hours()/halfLife.Hours())
 }
 
